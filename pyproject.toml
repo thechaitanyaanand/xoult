@@ -1,0 +1,27 @@
+[project]
+name = "xoult"
+version = "0.1.0"
+description = "Personalized daily arXiv feed: a recommender with LLM-written TLDRs"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pgvector>=0.3",
+    "psycopg[binary,pool]>=3.2",
+    "pydantic-settings>=2.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
