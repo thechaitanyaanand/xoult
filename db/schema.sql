@@ -14,13 +14,23 @@ create table if not exists papers (
 
 create index if not exists papers_published_idx on papers (published_at desc);
 create index if not exists papers_categories_idx on papers using gin (categories);
-create index if not exists papers_embedding_idx on papers using hnsw (embedding vector_cosine_ops);
+-- No vector index on purpose: the feed ranks a filtered week of papers exactly
+-- (rank.py), and an HNSW index cost 2.1 KB of the 6.6 KB each paper took, a third of the
+-- free 500 MB database. Add it back with a search feature that ranks the whole table.
+drop index if exists papers_embedding_idx;
 
+-- Everyone starts anonymous (just this row, held by a signed session cookie). Signing in
+-- with Google attaches google_sub; the email is kept only for the account page.
 create table if not exists users (
     id         uuid primary key default gen_random_uuid(),
     categories text[] not null default '{}',  -- picked at signup, used for cold start
     created_at timestamptz not null default now()
 );
+
+-- Added after the first deploy; `add column if not exists` keeps this file safe to re-run.
+alter table users add column if not exists google_sub   text unique;  -- Google's stable id
+alter table users add column if not exists email        text;
+alter table users add column if not exists last_seen_at timestamptz not null default now();
 
 -- Text + check instead of a Postgres enum: adding a value later is a one-line change
 -- instead of an ALTER TYPE migration.
@@ -34,3 +44,5 @@ create table if not exists events (
 );
 
 create index if not exists events_user_idx on events (user_id, created_at desc);
+-- "has anyone been shown this paper?" when picking which TLDRs to write first
+create index if not exists events_paper_idx on events (paper_id, kind);

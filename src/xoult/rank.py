@@ -84,13 +84,20 @@ def explain(items: list[Candidate], saved_titles: list[str], saved: np.ndarray) 
 
 SEEN = "select paper_id from events where user_id = %(user)s and kind in ('save', 'dismiss')"
 
+# Filter first, then rank exactly. A week of papers in someone's categories is a few
+# thousand rows, so exact distances take milliseconds; the HNSW index would apply the
+# category filter only after its approximate search and silently return too few.
 BY_SIMILARITY = f"""
-select id, title, tldr, abstract, authors, categories, published_at, embedding,
-       1 - (embedding <=> %(profile)s) as similarity
-from papers
-where embedding is not null
-  and published_at > now() - make_interval(days => %(days)s)
-  and id not in ({SEEN})
+with pool as materialized (
+    select id, title, tldr, abstract, authors, categories, published_at, embedding
+    from papers
+    where embedding is not null
+      and categories && %(categories)s
+      and published_at > now() - make_interval(days => %(days)s)
+      and id not in ({SEEN})
+)
+select *, 1 - (embedding <=> %(profile)s) as similarity
+from pool
 order by embedding <=> %(profile)s
 limit %(k)s
 """
@@ -130,13 +137,9 @@ def feed(conn: Connection, user_id: UUID, categories: list[str], limit: int) -> 
         "days": WINDOW_DAYS,
         "k": CANDIDATES,
     }
-    with conn.transaction():
-        # HNSW only looks at ef_search neighbours (default 40) before the WHERE filter
-        # runs, which would silently cap the candidate pool far below CANDIDATES.
-        conn.execute(f"set local hnsw.ef_search = {CANDIDATES * 2}")
-        with conn.cursor(row_factory=class_row(Candidate)) as cur:
-            cur.execute(BY_SIMILARITY if profile is not None else BY_CATEGORY, params)
-            candidates = cur.fetchall()
+    with conn.cursor(row_factory=class_row(Candidate)) as cur:
+        cur.execute(BY_SIMILARITY if profile is not None else BY_CATEGORY, params)
+        candidates = cur.fetchall()
     items = rerank(candidates, set(categories), datetime.now(UTC))[:limit]
     explain(items, saved_titles, saved)
     return items

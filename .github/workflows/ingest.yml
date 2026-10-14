@@ -2,9 +2,11 @@ name: ingest
 
 on:
   # arXiv announces Sunday-Thursday evenings US Eastern; the feed is rebuilt by about
-  # 06:00 UTC the next morning.
+  # 06:00 UTC the next morning. The afternoon run finds nothing new to fetch, but writes
+  # TLDRs for papers people were shown since the morning (see NEEDS_TLDR in ingest.py).
   schedule:
     - cron: "0 7 * * 1-5"
+    - cron: "0 14 * * 1-5"
   workflow_dispatch:
 
 concurrency: ingest
@@ -17,6 +19,9 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      LLAMA_API_KEY: ${{ secrets.LLAMA_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
@@ -30,6 +35,6 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: .cache/fastembed
-          key: fastembed-${{ hashFiles('src/xoult/config.py') }}
+          key: fastembed-${{ hashFiles('evals/baseline.json') }}
       - run: uv run python -m xoult.db
       - run: uv run python -m xoult.ingest

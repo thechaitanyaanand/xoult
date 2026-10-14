@@ -1,26 +1,28 @@
 # xoult
 
-A personalized daily arXiv feed. Every weekday it pulls the new cs.CL / cs.IR / cs.LG
-announcements (1,000+ papers), embeds them, writes a one-line TLDR for each, and ranks
-them per reader from what they save and dismiss.
+A personalized daily arXiv feed. Every weekday it pulls the new announcements in six
+ML categories (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV, stat.ML: about 1,900 papers), embeds
+them, writes one-line TLDRs, and ranks them per reader from what they save and dismiss.
 
 It's a small recommender system with LLM augmentation, run entirely on free tiers.
+No account is needed to start; Google sign-in keeps saves across devices.
 
 ## How it works
 
 ```
-GitHub Actions cron (weekdays)                       Render (free web service)
-  arXiv RSS ──► parse ──► Postgres  ◄──────────────── FastAPI ◄── browser
-                 │        (pgvector)                     │
-                 ├─► fastembed (bge-small, local ONNX)   ├─ stage 1: pgvector ANN against the
-                 └─► LiteLLM: Groq ─► Gemini fallback    │  user's Rocchio profile (200 candidates)
-                      (TLDRs, traced in Langfuse)        └─ stage 2: rerank on similarity,
-                                                            recency, category match
+GitHub Actions cron (weekdays)                        Render (free web service)
+  arXiv RSS ──► parse ──► Postgres  ◄────────────────── FastAPI ◄── browser
+                 │        (pgvector)                      │         (signed session cookie)
+                 ├─► fastembed (MiniLM-L6, local ONNX)    ├─ stage 1: exact cosine against the
+                 └─► LLM chain with cooldowns:            │  user's Rocchio profile, over a week
+                     Groq → Gemini → Llama → xAI          │  of papers in their categories
+                     (TLDRs, traced in Langfuse)          └─ stage 2: rerank on similarity,
+                                                             recency, category match
 ```
 
 - **Ingest** (`src/xoult/ingest.py`): one RSS request per day, idempotent inserts, then
-  embeds and summarizes whatever is missing. Every step is resumable, so a failed run is
-  fixed by running it again.
+  embeds and summarizes whatever is missing, writing TLDRs first for papers people are
+  actually shown. Every step is resumable, so a failed run is fixed by running it again.
 - **Ranking** (`src/xoult/rank.py`): a user's profile is the mean of their saved papers'
   embeddings pushed away from dismissed ones (Rocchio). New users get the newest papers
   in the categories they picked.
@@ -29,6 +31,10 @@ GitHub Actions cron (weekdays)                       Render (free web service)
 - **Feedback loop**: every impression, click, save and dismiss is logged with the ranker
   version that produced it, so ranking changes can be compared on live save rate
   (`GET /stats`).
+
+Data storage, the security model, Google sign-in, the LLM fallback chain, and why
+there's no Kubernetes, Kafka, separate vector database or fine-tuning (with the point
+at which each would be worth it) are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Evaluation
 
@@ -91,4 +97,5 @@ Tests: `uv run pytest`. Lint: `uv run ruff check . && uv run ruff format --check
 | LLM | Groq, falling back to Gemini |
 | Tracing / errors | Langfuse / Sentry |
 
-Product reasoning and what was deliberately left out: [PRODUCT.md](PRODUCT.md).
+Step-by-step setup and deployment: [DEPLOY.md](DEPLOY.md). Product reasoning and what was
+deliberately left out: [PRODUCT.md](PRODUCT.md).

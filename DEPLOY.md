@@ -136,31 +136,61 @@ GitHub secret.
 
 | Key | Where to get it | Variable |
 | --- | --- | --- |
-| Groq | [console.groq.com](https://console.groq.com) → API Keys → Create API Key | `GROQ_API_KEY` |
-| Gemini | [aistudio.google.com](https://aistudio.google.com) → Get API key → Create API key | `GEMINI_API_KEY` |
+| Groq (primary LLM) | [console.groq.com](https://console.groq.com) → API Keys → Create API Key | `GROQ_API_KEY` |
+| Gemini (fallback) | [aistudio.google.com](https://aistudio.google.com) → Get API key → Create API key | `GEMINI_API_KEY` |
+| OpenRouter (fallback, optional) | [openrouter.ai](https://openrouter.ai) → Keys. Without credit only `:free` models work, which is all xoult uses | `OPENROUTER_API_KEY` |
+| Meta Llama API (fallback, optional) | [llama.developer.meta.com](https://llama.developer.meta.com) → API keys | `LLAMA_API_KEY` |
+| xAI (paid last resort, optional) | [console.x.ai](https://console.x.ai) → API keys; needs prepaid credits | `XAI_API_KEY` |
+| Session secret | Generate: `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"` | `SECRET_KEY` |
+| Google sign-in (optional) | See "Google sign-in" below | `GOOGLE_CLIENT_ID` |
 | Langfuse (optional) | [cloud.langfuse.com](https://cloud.langfuse.com) → new project → Settings → API Keys → Create | `LANGFUSE_PUBLIC_KEY` (`pk-lf-…`), `LANGFUSE_SECRET_KEY` (`sk-lf-…`), `LANGFUSE_HOST` |
 | Sentry (optional) | [sentry.io](https://sentry.io) → Create Project → platform FastAPI → copy the DSN | `SENTRY_DSN` |
 | Database URL | Part 3 | `DATABASE_URL` |
 
+Variable names must be exactly as written, uppercase with underscores: Windows forgives
+lowercase, but GitHub Actions and Render run Linux and won't find the key.
+
 Notes:
 
-- **Check the model names.** The defaults in `src/xoult/config.py` are
-  `groq/openai/gpt-oss-20b`, then `gemini/gemini-3.5-flash-lite`. Confirm both appear in
-  the Groq and Gemini model lists on your free plan. If one has been renamed or retired,
-  change the default in `config.py`. Setting `LLM_MODELS` only in your local `.env`
-  doesn't reach GitHub Actions.
+- **LLM order.** `llm_models` in `src/xoult/config.py` is tried top to bottom: Groq,
+  Gemini Flash-Lite, OpenRouter (free Nemotron), Gemini Flash, OpenRouter (free Gemma),
+  Meta Llama, xAI. Any provider without a key, out of quota or failing is skipped for a
+  while, so you can run with just Groq.
+  [ARCHITECTURE.md](ARCHITECTURE.md#llm-calls) explains the cooldowns.
+- **Check that your keys work.** One call per model, a few seconds:
+
+  ```powershell
+  uv run python -m xoult.ingest --tldrs 5
+  ```
+
+  Expected: `wrote 5/5 tldrs`. A line like `xai/... failed with APIError; trying the next
+  model` names a provider whose key is wrong or has no credits.
 - **Langfuse host** depends on the region you picked when creating the project (EU:
   `https://cloud.langfuse.com`, US: `https://us.cloud.langfuse.com`). Use the URL shown
-  next to your keys.
+  next to your keys. With keys set, `tldr-v1` traces appear under Tracing within a minute.
 
-Test the keys locally: put them in `.env`, remove the `LLM_MODELS=` line from Part 1, then:
+### Google sign-in (optional)
 
-```powershell
-uv run python -m xoult.ingest --tldrs 5
-```
+People can use xoult without an account. Sign-in keeps their saves across devices.
+Google's interface names shift a little over time; the steps are:
 
-Expected: `wrote 5/5 tldrs`. With Langfuse keys set, five `tldr-v1` traces appear under
-Tracing in Langfuse within a minute.
+1. [console.cloud.google.com](https://console.cloud.google.com) → create a project
+   named `xoult`.
+2. **APIs & Services → OAuth consent screen** (shown as "Google Auth Platform" in newer
+   consoles) → set the app name `xoult`, your support email, audience **External**.
+3. **Clients → Create client** → type **Web application**. Under **Authorized JavaScript
+   origins** add:
+   - `http://localhost:8000` and `http://localhost` (local)
+   - `https://<your-app>.onrender.com` (after Part 5)
+
+   No redirect URI is needed: the button returns a signed token to the page, and the
+   server verifies it. Copy the **Client ID** (ends in `.apps.googleusercontent.com`) into
+   `GOOGLE_CLIENT_ID`. The client secret is not used.
+4. **Audience → Publish app.** While in "Testing", only test users you list can sign in.
+   xoult asks only for the basic `openid email profile` scopes, which don't need Google's
+   verification review.
+5. Locally, open **http://localhost:8000**, not 127.0.0.1. Google matches the origin
+   exactly.
 
 ---
 
@@ -233,7 +263,10 @@ Tracing in Langfuse within a minute.
    | --- | --- |
    | `DATABASE_URL` | yes (Supabase session pooler URI) |
    | `GROQ_API_KEY` | yes |
-   | `GEMINI_API_KEY` | yes (fallback) |
+   | `GEMINI_API_KEY` | recommended (fallback when Groq is rate limited) |
+   | `OPENROUTER_API_KEY` | optional (fallback) |
+   | `LLAMA_API_KEY` | optional (fallback) |
+   | `XAI_API_KEY` | optional (paid last resort) |
    | `LANGFUSE_PUBLIC_KEY` | optional |
    | `LANGFUSE_SECRET_KEY` | optional |
    | `LANGFUSE_HOST` | optional |
@@ -258,8 +291,10 @@ Tracing in Langfuse within a minute.
    select count(*) as papers, count(embedding) as embedded, count(tldr) as with_tldr from papers;
    ```
 
-From now on the ingest runs on its own every weekday at 07:00 UTC (12:30 IST). GitHub
-can start scheduled runs late by several minutes. That's normal.
+From now on the ingest runs on its own every weekday at 07:00 UTC (12:30 IST), and again
+at 14:00 UTC to write TLDRs for papers people were shown that morning. Each run also
+deletes papers older than 30 days that nobody saved, which keeps the database far under
+Supabase's 500 MB. GitHub can start scheduled runs late by several minutes. That's normal.
 
 ---
 
@@ -273,7 +308,15 @@ can start scheduled runs late by several minutes. That's normal.
 
 3. Fill in the variables it asks for:
    - `DATABASE_URL`: the same Supabase session pooler URI
+   - `GOOGLE_CLIENT_ID`: your client id, or leave it empty to hide sign-in
+   - `PUBLIC_URL`: the app's address, e.g. `https://xoult-abcd.onrender.com` (you can
+     fill it in after the first deploy shows the URL). Link previews, `robots.txt` and the
+     sitemap use it
    - `SENTRY_DSN`: your DSN, or leave it empty
+
+   `SECRET_KEY` is generated by Render and `COOKIE_SECURE=true` is set by `render.yaml`.
+   **Never regenerate `SECRET_KEY`:** anonymous users exist only through cookies signed
+   with it, so a new key cuts them off from their saves.
 
 4. **Apply**. The first Docker build takes ~3–5 minutes. Under **Logs**, the deploy is
    done when you see `Uvicorn running on http://0.0.0.0:10000` (Render sets `PORT`
@@ -321,7 +364,13 @@ How the free plan behaves:
 | TLDRs: `wrote 0/300` with `RateLimitError` | Free LLM quota used up | Lower `tldrs_per_run` in `config.py`; Gemini fallback covers some |
 | TLDRs: `model not found` / decommissioned | Provider renamed or retired the model | Update `llm_models` in `config.py` (Part 2 notes) |
 | Render deploy fails the health check | `DATABASE_URL` missing or wrong | Render → Environment, fix it, Manual Deploy |
-| Page says "Couldn't load the feed" | Free instance waking up | Wait a minute and reload |
+| Page says "Couldn't reach the server" | Free instance waking up | Wait a minute and press Try again |
+| Render deploy crashes with `Set SECRET_KEY to 32+ random characters` | `SECRET_KEY` missing or short while `COOKIE_SECURE=true` | Let Render generate it (Blueprint), or set 32+ random characters |
+| Google button missing | `GOOGLE_CLIENT_ID` not set | Set it (Part 2, Google sign-in) |
+| Google popup: "origin not allowed" / `origin_mismatch` | Page origin not in the client's Authorized JavaScript origins | Add the exact origin; locally use `http://localhost:8000`, not 127.0.0.1 |
+| Only you can sign in with Google | Consent screen still in "Testing" | Audience → Publish app |
+| `429 Too Many Requests` while testing | Per-IP rate limit (5 sign-ups a minute) | Wait a minute; limits are in `RateLimit(...)` in `api.py` |
+| Everyone is logged out after a deploy | `SECRET_KEY` changed | Restore the old key; anonymous saves come back with it |
 | No traces in Langfuse | Keys missing, or host is the wrong region | Check `LANGFUSE_HOST` matches the project's region |
 | CI `ranking-eval` fails after your change | NDCG@10 dropped more than 2% | Fix it; if the change is a deliberate trade-off, see "Update the eval baseline" |
 | CI fails on `uv sync --locked` | `uv.lock` is stale | `uv lock`, commit `uv.lock` |

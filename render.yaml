@@ -9,3 +9,14 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      # e.g. https://xoult.onrender.com, for link previews, robots.txt and the sitemap
+      - key: PUBLIC_URL
+        sync: false
+      # Generated once by Render and kept across deploys. Never rotate it casually:
+      # anonymous users exist only through cookies signed with it.
+      - key: SECRET_KEY
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"

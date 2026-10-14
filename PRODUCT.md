@@ -31,14 +31,25 @@ shows 200 and gets 5.
   volume, not with the number of users, so the free tiers hold.
 - **Show the abstract one click away.** A TLDR can be wrong. The source is always visible,
   and the TLDR never replaces it.
-- **No account system yet.** A random id in the browser is enough to test whether the
-  ranking is useful. Logins come after people want to use it on two devices.
+- **Anonymous first, sign-in second.** Asking for an account before people have seen a
+  feed loses most of them. Google sign-in is offered once it has a reason: a nudge
+  appears after three saves ("these live only in this browser"), and signing in keeps
+  everything already saved, merging devices into one account.
+- **Categories filter; saves rank.** Unticking a category removes it from the feed even
+  if saved papers point there. People expect "follow" to mean exactly that, so
+  similarity only orders papers within what they follow.
+- **Say why something is recommended.** "Because you saved X" turns an opaque ranking
+  into something people can check, and correct by dismissing.
+- **Undo everything.** A misclicked "Not for me" would otherwise skew the profile, and
+  people stop using buttons they can't take back.
+- **Your data is yours.** Settings exports everything as JSON and deletes the account
+  in one step. Nothing is collected that the ranking doesn't use.
 
 ## Deliberately not built (yet)
 
 | Not built | Why | Build it when |
 |---|---|---|
-| Email digest | Needs accounts and deliverability work | Users return daily on their own first |
+| Email digest | Deliverability, unsubscribe and consent work; sign-in already provides the email | Signed-in users return daily on their own first |
 | Full-text search | Different job (lookup, not discovery) | Users ask for it |
 | Fine-tuned ranker | Not enough interaction data to train one | Thousands of saves logged |
 | Diversity re-ranking (MMR) | Unclear the feed is too repetitive | Dismiss data shows near-duplicate fatigue |

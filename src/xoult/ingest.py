@@ -122,13 +122,24 @@ def embed_missing(batch_size: int = 256) -> int:
         log.info("embedded %d papers", total)
 
 
+# The free LLM quota covers a few hundred TLDRs a day, fewer than arXiv announces, so
+# spend it where readers will look: papers already shown in someone's feed, then papers
+# in categories someone follows, then the newest of the rest.
+NEEDS_TLDR = """
+select p.id, p.title, p.abstract from papers p
+where p.tldr is null
+order by
+    exists (select 1 from events e where e.paper_id = p.id and e.kind = 'impression') desc,
+    p.categories && (select coalesce(array_agg(distinct c), '{}') from users, unnest(categories) c)
+        desc,
+    p.published_at desc
+limit %s
+"""
+
+
 def summarize_missing(limit: int) -> int:
     with get_pool().connection() as conn:
-        rows = conn.execute(
-            "select id, title, abstract from papers where tldr is null "
-            "order by published_at desc limit %s",
-            (limit,),
-        ).fetchall()
+        rows = conn.execute(NEEDS_TLDR, (limit,)).fetchall()
 
     done = 0
     for paper_id, title, abstract in rows:
@@ -148,10 +159,36 @@ def summarize_missing(limit: int) -> int:
     return done
 
 
+def prune() -> None:
+    with get_pool().connection() as conn:
+        # Saved and dismissed papers stay: they make up profiles and the saved list.
+        papers = conn.execute(
+            "delete from papers p where published_at < now() - make_interval(days => %s) "
+            "and not exists (select 1 from events e where e.paper_id = p.id "
+            "and e.kind in ('save', 'dismiss'))",
+            (settings.keep_papers_days,),
+        ).rowcount
+        # Impressions are ~95% of all rows and only the last 14 days feed /stats.
+        old = conn.execute(
+            "delete from events where kind = 'impression' "
+            "and created_at < now() - interval '90 days'"
+        ).rowcount
+        # Anonymous visitors who never saved anything and haven't been back in a month.
+        idle = conn.execute(
+            "delete from users u where google_sub is null "
+            "and last_seen_at < now() - interval '30 days' "
+            "and not exists (select 1 from events e where e.user_id = u.id and e.kind = 'save')"
+        ).rowcount
+    log.info("pruned %d old papers, %d old impressions, %d idle anonymous users", papers, old, idle)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     for noisy in ("httpx", "LiteLLM"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # LiteLLM starts a background logging task per sync call and abandons it, so asyncio
+    # logs "Task was destroyed but it is pending!" every time. We run no asyncio of our own.
+    logging.getLogger("asyncio").setLevel(logging.CRITICAL)
     parser = argparse.ArgumentParser(description="Fetch, embed and summarize new arXiv papers.")
     parser.add_argument("--tldrs", type=int, default=settings.tldrs_per_run)
     parser.add_argument(
@@ -169,6 +206,7 @@ def main() -> None:
     store_new_papers()
     embed_missing()
     summarize_missing(args.tldrs)
+    prune()
 
 
 if __name__ == "__main__":

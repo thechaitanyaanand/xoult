@@ -3,8 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>xoult</title>
-<meta name="description" content="Today's arXiv papers, ranked by what you save.">
+<title>xoult: today's arXiv, ranked for you</title>
+<meta name="description" content="A free daily feed of new arXiv machine learning papers, ranked by what you save, with a one-line TLDR for each. No account needed.">
+<link rel="canonical" href="{{origin}}/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="xoult">
+<meta property="og:title" content="xoult: today's arXiv, ranked for you">
+<meta property="og:description" content="About 1,900 new ML papers a weekday, ranked by what you save, each with a one-line TLDR.">
+<meta property="og:url" content="{{origin}}/">
+<meta property="og:image" content="{{origin}}/static/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="xoult: a ranked list of today's arXiv papers">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#151821" media="(prefers-color-scheme: dark)">
+<link rel="alternate" type="text/plain" href="/llms.txt" title="Summary for AI assistants">
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@type": "WebApplication", "name": "xoult",
+ "url": "{{origin}}/", "applicationCategory": "EducationalApplication", "operatingSystem": "Any",
+ "description": "A free daily feed of new arXiv machine learning papers, ranked by what you save, with a one-line TLDR for each.",
+ "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M7 17l6 6L25 9' fill='none' stroke='%232b4bd6' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -130,8 +150,40 @@
   th:not(:first-child), td:not(:first-child) { text-align: right; }
   .explainer { color: var(--muted); max-width: 36rem; }
 
+  /* Settings */
+  .settings section { padding: 1.5rem 0; border-bottom: 1px solid var(--rule); }
+  .settings section:first-of-type { padding-top: 0.5rem; }
+  .settings h2 { font-size: 1.1875rem; font-weight: 600; margin: 0 0 0.5rem; }
+  .settings p { margin: 0 0 1rem; max-width: 36rem; color: var(--muted); }
+  .settings .row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem 1rem; }
+  /* The section heading already says it; keep the legend for screen readers only. */
+  .settings legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  a.btn { display: inline-block; text-decoration: none; }
+  .btn.danger { border-color: #b4232a; color: #b4232a; }
+  @media (prefers-color-scheme: dark) { .btn.danger { border-color: #ff8a8a; color: #ff8a8a; } }
+  .nudge { margin: -1rem 0 2rem; font: 0.875rem/1.5 var(--sans); color: var(--muted); }
+  .alt { margin-top: 2.5rem; padding-top: 1.5rem; border-top: 1px solid var(--rule); }
+  .alt p { margin-bottom: 0.75rem; }
+  .gsi { min-height: 44px; }
+
   .footer { margin-top: 1rem; font: 0.75rem var(--sans); color: var(--muted); }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* Wide mode: use the width for a second column, not for longer lines. Below 1080px
+     there's no room for two readable columns, so it quietly stays a single column. */
+  @media (min-width: 1080px) {
+    .wide main { max-width: 74rem; }
+    .wide .paper {
+      display: grid; grid-template-columns: minmax(0, 21rem) minmax(0, 1fr);
+      grid-template-rows: auto 1fr; column-gap: 2.75rem;
+    }
+    .wide .paper .head { grid-column: 1; grid-row: 1; }
+    .wide .paper .actions { grid-column: 1; grid-row: 2; align-self: end; margin-top: 1rem; }
+    .wide .paper .body { grid-column: 2; grid-row: 1 / span 2; }
+    .wide .paper .summary { margin-top: 0; }
+    .wide .actions .cats { margin-left: 0; width: 100%; }
+    .wide .more { margin-left: var(--gutter); }
+  }
 
   @media (max-width: 560px) {
     :root { --gutter: 1.9rem; }
@@ -150,324 +202,23 @@
       <a href="#today">Today</a>
       <a href="#saved">Saved <span id="saved-count"></span></a>
       <a href="#stats">Stats</a>
+      <a href="#settings">Settings</a>
     </nav>
   </header>
-  <div id="view"></div>
+  <div id="view">
+    <!-- Readable without JavaScript, for crawlers and AI search tools that don't run it. -->
+    <noscript>
+      <section class="welcome">
+        <h1>A short list from today's arXiv</h1>
+        <p>xoult ranks the roughly 1,900 machine learning papers announced on arXiv each
+          weekday (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV and stat.ML) for each reader, from the
+          papers they save and dismiss, and gives every paper a one-line TLDR.</p>
+        <p>It needs JavaScript to run. A plain-text summary is at <a href="/llms.txt">/llms.txt</a>.</p>
+      </section>
+    </noscript>
+  </div>
   <p class="sr-only" aria-live="polite" id="announce"></p>
 </main>
-<script>
-"use strict";
-
-const NAMES = {
-  "cs.AI": "Artificial Intelligence", "cs.CL": "Computation and Language",
-  "cs.CV": "Computer Vision", "cs.IR": "Information Retrieval",
-  "cs.LG": "Machine Learning", "stat.ML": "Machine Learning (Statistics)",
-};
-
-const $ = (sel, root = document) => root.querySelector(sel);
-const view = $("#view");
-
-const store = {
-  get() { try { return localStorage.getItem("xoult-user"); } catch { return null; } },
-  set(v) { try { v ? localStorage.setItem("xoult-user", v) : localStorage.removeItem("xoult-user"); } catch {} },
-};
-
-// Skips null children so optional parts can be written inline as `cond ? el(...) : null`.
-function append(node, ...children) {
-  node.append(...children.filter((c) => c !== null && c !== undefined));
-  return node;
-}
-
-function el(tag, props = {}, ...children) {
-  return append(Object.assign(document.createElement(tag), props), ...children);
-}
-
-function say(message) { $("#announce").textContent = message; }
-
-async function api(path, options = {}) {
-  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
-  if (!res.ok) {
-    const err = new Error(`${res.status}`);
-    err.status = res.status;
-    throw err;
-  }
-  return res.status === 204 ? null : res.json();
-}
-
-function track(paperId, kind) {
-  // keepalive lets a click survive the tab navigating to arXiv.
-  return fetch("/events", {
-    method: "POST", keepalive: true, headers: { "content-type": "application/json" },
-    body: JSON.stringify({ user_id: store.get(), paper_id: paperId, kind }),
-  });
-}
-
-function untrack(paperId, kind) {
-  const q = new URLSearchParams({ user_id: store.get(), paper_id: paperId, kind });
-  return fetch(`/events?${q}`, { method: "DELETE" });
-}
-
-function authors(list) {
-  if (list.length <= 3) return list.join(", ");
-  return `${list.slice(0, 3).join(", ")} and ${list.length - 3} more`;
-}
-
-function failure(retry) {
-  return el("p", { className: "status" },
-    "Couldn't reach the server. On the free plan it sleeps when idle and takes up to a minute to start.",
-    el("button", { className: "btn", textContent: "Try again", onclick: retry }));
-}
-
-/* ---------- Today ---------- */
-
-let lastAction = null;  // { node, paper, kind } for undo
-let savedCount = 0;
-
-function setSavedCount(n) {
-  savedCount = Math.max(0, n);
-  $("#saved-count").textContent = savedCount ? `(${savedCount})` : "";
-}
-
-function entry(p, rank, { saved = false } = {}) {
-  const url = `https://arxiv.org/abs/${p.id}`;
-  const node = el("li", { className: "paper", tabIndex: -1 });
-  node.dataset.id = p.id;
-
-  const title = el("a", { href: url, target: "_blank", rel: "noopener", textContent: p.title });
-  title.addEventListener("click", () => track(p.id, "click"));
-
-  const summary = p.tldr ?? `${p.abstract.slice(0, 260).trimEnd()}…`;
-  const actions = el("div", { className: "actions" });
-
-  append(node,
-    el("span", { className: "mark", textContent: saved ? "✓" : String(rank), ariaHidden: "true" }),
-    el("h2", {}, title),
-    el("p", { className: "byline", textContent: authors(p.authors) }),
-    el("p", { className: "summary", textContent: summary }),
-    p.because ? el("p", { className: "because" }, "Because you saved ", el("cite", { textContent: p.because })) : null,
-    el("details", {}, el("summary", { textContent: "Abstract" }), el("p", { textContent: p.abstract })),
-    actions,
-  );
-
-  const links = [
-    el("a", { className: "link", href: `https://arxiv.org/pdf/${p.id}`, target: "_blank", rel: "noopener", textContent: "PDF" }),
-    el("span", { className: "cats", textContent: p.categories.slice(0, 3).join("  ") }),
-  ];
-
-  const idle = () => {
-    node.dataset.state = "";
-    $(".mark", node).textContent = String(rank);
-    actions.replaceChildren(
-      el("button", { className: "btn primary", textContent: "Save", onclick: () => act(node, p, "save") }),
-      el("button", { className: "btn", textContent: "Not for me", onclick: () => act(node, p, "dismiss") }),
-      ...links,
-    );
-  };
-  const done = (kind) => {
-    node.dataset.state = kind === "save" ? "saved" : "dismissed";
-    if (kind === "save") $(".mark", node).textContent = "✓";
-    actions.replaceChildren(
-      el("span", { className: "note", textContent: kind === "save" ? "Saved" : "Hidden from your feed" }),
-      el("button", { className: "link", textContent: "Undo", onclick: () => undo(node, p, kind) }),
-      ...links,
-    );
-  };
-  node._idle = idle;
-  node._done = done;
-
-  if (saved) {
-    node.dataset.state = "saved";
-    actions.replaceChildren(
-      el("a", { className: "link", href: `https://arxiv.org/bibtex/${p.id}`, target: "_blank", rel: "noopener", textContent: "BibTeX" }),
-      el("button", { className: "link", textContent: "Remove", onclick: async () => {
-        await untrack(p.id, "save");
-        node.remove();
-        setSavedCount(savedCount - 1);
-        $(".dateline").textContent = savedLine(savedCount);
-        say("Removed from saved");
-      } }),
-      ...links,
-    );
-  } else {
-    idle();
-  }
-  return node;
-}
-
-async function act(node, p, kind) {
-  node._done(kind);
-  lastAction = { node, p, kind };
-  if (kind === "save") setSavedCount(savedCount + 1);
-  say(kind === "save" ? "Saved" : "Hidden");
-  const res = await track(p.id, kind);
-  if (!res.ok) { node._idle(); if (kind === "save") setSavedCount(savedCount - 1); say("That didn't save. Try again."); }
-}
-
-async function undo(node, p, kind) {
-  node._idle();
-  if (kind === "save") setSavedCount(savedCount - 1);
-  lastAction = null;
-  say("Undone");
-  await untrack(p.id, kind);
-  node.focus();
-}
-
-function dateline(feed) {
-  if (!feed.latest_date) return "No papers yet. The first batch arrives with the next weekday ingest.";
-  const day = new Date(feed.latest_date).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-  const ranked = feed.items.some((i) => i.because)
-    ? "Ranked by what you've saved."
-    : "Ranked by your categories until you save a few.";
-  return `${feed.latest_count.toLocaleString()} new papers announced ${day}. ${ranked}`;
-}
-
-async function renderToday() {
-  view.replaceChildren(el("p", { className: "status", textContent: "Ranking today's papers…" }));
-  let feed;
-  try {
-    feed = await api(`/feed?user_id=${store.get()}&limit=20`);
-  } catch (e) {
-    if (e.status === 404) { store.set(null); return route(); }
-    return view.replaceChildren(failure(renderToday));
-  }
-  lastAction = null;
-  const list = el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)));
-  view.replaceChildren(
-    el("p", { className: "dateline", textContent: dateline(feed) }),
-    feed.items.length ? list : el("p", { className: "status", textContent: "You've been through everything from the last week. New papers arrive each weekday." }),
-    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: () => { renderToday(); scrollTo(0, 0); } }) : null,
-    el("p", { className: "hint" },
-      el("kbd", { textContent: "j" }), " ", el("kbd", { textContent: "k" }), " move   ",
-      el("kbd", { textContent: "s" }), " save   ",
-      el("kbd", { textContent: "x" }), " not for me   ",
-      el("kbd", { textContent: "o" }), " open   ",
-      el("kbd", { textContent: "a" }), " abstract   ",
-      el("kbd", { textContent: "u" }), " undo"),
-  );
-}
-
-/* ---------- Saved ---------- */
-
-const savedLine = (n) => (n
-  ? `${n} saved, most recent first. Each one shapes your ranking.`
-  : "Nothing saved yet. Save papers from Today and they collect here.");
-
-async function renderSaved() {
-  view.replaceChildren(el("p", { className: "status", textContent: "Loading saved papers…" }));
-  let papers;
-  try {
-    papers = await api(`/saved?user_id=${store.get()}`);
-  } catch (e) {
-    if (e.status === 404) { store.set(null); return route(); }
-    return view.replaceChildren(failure(renderSaved));
-  }
-  setSavedCount(papers.length);
-  view.replaceChildren(
-    el("p", { className: "dateline", textContent: savedLine(papers.length) }),
-    el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true }))),
-  );
-}
-
-/* ---------- Stats ---------- */
-
-async function renderStats() {
-  view.replaceChildren(el("p", { className: "status", textContent: "Loading…" }));
-  let rows;
-  try { rows = await api("/stats"); } catch { return view.replaceChildren(failure(renderStats)); }
-  const pct = (v) => (v === null ? "–" : `${(v * 100).toFixed(1)}%`);
-  view.replaceChildren(
-    el("p", { className: "dateline", textContent: "How each version of the ranking performs for all readers over the last 14 days." }),
-    rows.length
-      ? el("table", {},
-          el("thead", {}, el("tr", {}, ...["Ranking", "Readers", "Shown", "Saved", "Not for me", "Opened"].map((h) => el("th", { textContent: h })))),
-          el("tbody", {}, ...rows.map((r) => el("tr", {},
-            el("td", { textContent: r.ranker }),
-            el("td", { textContent: r.users.toLocaleString() }),
-            el("td", { textContent: r.impressions.toLocaleString() }),
-            el("td", { textContent: pct(r.save_rate) }),
-            el("td", { textContent: pct(r.dismiss_rate) }),
-            el("td", { textContent: pct(r.ctr) }),
-          ))))
-      : el("p", { className: "status", textContent: "No activity in the last 14 days." }),
-    el("p", { className: "explainer" },
-      "Save rate is the share of shown papers that readers saved. It is the number a new ranking has to beat before it replaces the current one."),
-  );
-}
-
-/* ---------- Onboarding ---------- */
-
-async function renderWelcome() {
-  let cats;
-  try { cats = await api("/categories"); } catch { return view.replaceChildren(failure(renderWelcome)); }
-  const form = el("form", {},
-    el("fieldset", {},
-      el("legend", { textContent: "Categories you follow" }),
-      ...cats.map((c) => el("label", { className: "choice" },
-        el("input", { type: "checkbox", name: "c", value: c, checked: true }),
-        c, NAMES[c] ? el("span", { textContent: NAMES[c] }) : null))),
-    el("button", { className: "btn primary", type: "submit", textContent: "Start reading" }),
-  );
-  form.addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const picked = [...form.querySelectorAll("input:checked")].map((i) => i.value);
-    if (!picked.length) return say("Pick at least one category.");
-    try {
-      const user = await api("/users", { method: "POST", body: JSON.stringify({ categories: picked }) });
-      store.set(user.id);
-      location.hash = "#today";
-      route();
-    } catch { view.append(failure(() => form.requestSubmit())); }
-  });
-  view.replaceChildren(el("section", { className: "welcome" },
-    el("h1", { textContent: "A short list from today's arXiv" }),
-    el("p", { textContent: "Over a thousand papers are announced each weekday. Save the ones worth reading and mark the rest as not for you; the list reorders around what you save. No account needed." }),
-    form,
-  ));
-}
-
-/* ---------- Routing and keyboard ---------- */
-
-function route() {
-  const page = location.hash.slice(1) || "today";
-  for (const a of document.querySelectorAll("nav a")) {
-    if (a.hash === `#${page}` && store.get()) a.setAttribute("aria-current", "page");
-    else a.removeAttribute("aria-current");
-  }
-  if (!store.get()) return renderWelcome();
-  if (page === "saved") return renderSaved();
-  if (page === "stats") return renderStats();
-  return renderToday();
-}
-
-document.addEventListener("keydown", (e) => {
-  if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
-  const items = [...document.querySelectorAll(".paper")];
-  if (!items.length) return;
-  const current = items.indexOf(document.activeElement.closest?.(".paper"));
-  const focus = (i) => { const n = items[Math.max(0, Math.min(items.length - 1, i))]; n.focus(); n.scrollIntoView({ block: "nearest" }); };
-  const node = items[current];
-  const click = (sel) => { const b = node && $(sel, node); if (b) b.click(); };
-  switch (e.key) {
-    case "j": focus(current + 1); break;
-    case "k": focus(current < 0 ? 0 : current - 1); break;
-    case "s": if (node && !node.dataset.state) { click(".btn.primary"); focus(current + 1); } break;
-    case "x": if (node && !node.dataset.state) { click(".btn:not(.primary)"); focus(current + 1); } break;
-    case "o": click("h2 a"); break;
-    case "a": if (node) { const d = $("details", node); d.open = !d.open; } break;
-    case "u": if (lastAction) undo(lastAction.node, lastAction.p, lastAction.kind); break;
-    default: return;
-  }
-  e.preventDefault();
-});
-
-window.addEventListener("hashchange", route);
-
-(async () => {
-  if (store.get()) {
-    try { setSavedCount((await api(`/saved?user_id=${store.get()}`)).length); } catch {}
-  }
-  route();
-})();
-</script>
+<script src="/static/app.js" defer></script>
 </body>
 </html>

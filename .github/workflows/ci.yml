@@ -45,13 +45,13 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --all-extras
       # Embedding 17k papers takes a few minutes; reuse them until the embedding code
-      # or config changes.
+      # changes. baseline.json names the model, so it changes whenever the model does.
       - uses: actions/cache@v4
         with:
           path: |
             data/citeulike-a
             .cache/fastembed
-          key: citeulike-${{ hashFiles('src/xoult/embed.py', 'src/xoult/config.py') }}
+          key: citeulike-${{ hashFiles('src/xoult/embed.py', 'evals/baseline.json') }}
       - run: uv run python -m evals.rank_eval --check
 
   docker:
