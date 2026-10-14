@@ -46,7 +46,7 @@ jobs:
       - run: uv sync --locked --all-extras
       # Embedding 17k papers takes a few minutes; reuse them until the embedding code
       # changes. baseline.json names the model, so it changes whenever the model does.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: |
             data/citeulike-a

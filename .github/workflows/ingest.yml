@@ -32,7 +32,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked --extra ingest --no-default-groups
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: .cache/fastembed
           key: fastembed-${{ hashFiles('evals/baseline.json') }}
