@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: xoult
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

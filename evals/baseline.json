@@ -1,0 +1,6 @@
+{
+  "centroid / sentence-transformers/all-MiniLM-L6-v2": {
+    "ndcg@10": 0.10046007385180067,
+    "recall@50": 0.27277389731710955
+  }
+}

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xoult</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #b45309; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --accent: #f59e0b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; }
+  a { color: var(--accent); }
+  .muted, small { color: var(--muted); }
+  article { border-bottom: 1px solid var(--line); padding: 16px 0; }
+  article h2 { font-size: 17px; margin: 0 0 4px; }
+  article h2 a { color: var(--fg); text-decoration: none; }
+  article h2 a:hover { text-decoration: underline; }
+  article p { margin: 8px 0; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .actions { display: flex; gap: 8px; margin-top: 8px; }
+  button { font: inherit; font-size: 14px; padding: 4px 12px; border: 1px solid var(--line);
+           border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+  button:hover { border-color: var(--muted); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .done { opacity: .45; }
+  label { display: block; margin: 6px 0; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>xoult</h1>
+    <small><a href="/stats">stats</a> · <a href="#" id="reset">reset</a></small>
+  </header>
+  <section id="onboarding" hidden>
+    <p>Pick the arXiv categories you follow. Save papers you like and dismiss ones you don't;
+       the feed learns from both.</p>
+    <form id="pick"></form>
+  </section>
+  <p id="status" class="muted"></p>
+  <section id="feed"></section>
+</main>
+<script>
+const $ = (sel) => document.querySelector(sel);
+const store = {
+  get() { try { return localStorage.getItem("xoult-user"); } catch { return null; } },
+  set(v) { try { v ? localStorage.setItem("xoult-user", v) : localStorage.removeItem("xoult-user"); } catch {} },
+};
+
+async function api(path, options = {}) {
+  const res = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.status === 204 ? null : res.json();
+}
+
+function sendEvent(paperId, kind) {
+  // keepalive lets the click event survive navigating away to arXiv.
+  return fetch("/events", {
+    method: "POST", keepalive: true, headers: { "content-type": "application/json" },
+    body: JSON.stringify({ user_id: store.get(), paper_id: paperId, kind }),
+  });
+}
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+
+function card(p) {
+  const url = `https://arxiv.org/abs/${p.id}`;
+  const link = el("a", { href: url, target: "_blank", rel: "noopener", textContent: p.title });
+  link.addEventListener("click", () => sendEvent(p.id, "click"));
+  const authors = p.authors.slice(0, 3).join(", ") + (p.authors.length > 3 ? " et al." : "");
+  const article = el("article", {},
+    el("h2", {}, link),
+    el("small", { textContent: `${authors} · ${p.categories.slice(0, 3).join(", ")} · ${p.published_at.slice(0, 10)}` }),
+    el("p", { textContent: p.tldr ?? p.abstract.slice(0, 280) + "…" }),
+    el("details", {}, el("summary", { textContent: "abstract" }), el("p", { textContent: p.abstract })),
+  );
+  const actions = el("div", { className: "actions" });
+  for (const [kind, label, cls] of [["save", "Save", "primary"], ["dismiss", "Not for me", ""]]) {
+    const b = el("button", { textContent: label, className: cls });
+    b.addEventListener("click", async () => {
+      await sendEvent(p.id, kind);
+      article.classList.add("done");
+      actions.replaceChildren(el("small", { textContent: kind === "save" ? "saved" : "dismissed" }));
+    });
+    actions.append(b);
+  }
+  article.append(actions);
+  return article;
+}
+
+async function loadFeed() {
+  $("#status").textContent = "Loading…";
+  try {
+    const feed = await api(`/feed?user_id=${store.get()}&limit=20`);
+    $("#feed").replaceChildren(...feed.items.map(card));
+    $("#status").textContent = feed.items.length ? "" : "No papers yet. The next ingest runs daily.";
+  } catch (e) {
+    if (String(e).startsWith("404")) { store.set(null); return start(); }
+    $("#status").textContent = "Couldn't load the feed. The server may be waking up; retry in a minute.";
+  }
+}
+
+async function start() {
+  if (store.get()) { $("#onboarding").hidden = true; return loadFeed(); }
+  const cats = await api("/categories");
+  const form = $("#pick");
+  form.replaceChildren(
+    ...cats.map((c) => el("label", {}, el("input", { type: "checkbox", value: c, checked: true }), " " + c)),
+    el("button", { className: "primary", textContent: "Start" }),
+  );
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const picked = [...form.querySelectorAll("input:checked")].map((i) => i.value);
+    if (!picked.length) return;
+    const user = await api("/users", { method: "POST", body: JSON.stringify({ categories: picked }) });
+    store.set(user.id);
+    start();
+  };
+  $("#onboarding").hidden = false;
+}
+
+$("#reset").addEventListener("click", (e) => { e.preventDefault(); store.set(null); $("#feed").replaceChildren(); start(); });
+start();
+</script>
+</body>
+</html>
