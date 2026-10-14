@@ -20,6 +20,7 @@ def get_pool() -> ConnectionPool:
         max_size=5,
         kwargs={"prepare_threshold": None},
         configure=register_vector,
+        open=True,
     )
 
 

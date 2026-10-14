@@ -24,6 +24,8 @@ GitHub Actions cron (weekdays)                       Render (free web service)
 - **Ranking** (`src/xoult/rank.py`): a user's profile is the mean of their saved papers'
   embeddings pushed away from dismissed ones (Rocchio). New users get the newest papers
   in the categories they picked.
+- **Explanations**: each recommendation names the saved paper it is closest to ("because
+  you saved X"), since an averaged profile can't say why on its own.
 - **Feedback loop**: every impression, click, save and dismiss is logged with the ranker
   version that produced it, so ranking changes can be compared on live save rate
   (`GET /stats`).

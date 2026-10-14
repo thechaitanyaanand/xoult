@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 import numpy as np
+from pgvector import Vector
 from psycopg import Connection
 from psycopg.rows import class_row
 
@@ -21,6 +22,8 @@ class Candidate:
     categories: list[str]
     published_at: datetime
     similarity: float
+    embedding: Vector | None = None
+    because: str | None = None  # title of the saved paper this one is closest to
 
 
 @dataclass(frozen=True)
@@ -65,10 +68,24 @@ def rerank(
     return [candidates[i] for i in np.argsort(-score, kind="stable")]
 
 
+def explain(items: list[Candidate], saved_titles: list[str], saved: np.ndarray) -> None:
+    """Point each recommendation at the saved paper it is closest to.
+
+    The profile is an average, so it can't say why a paper ranked; the nearest saved
+    paper is a reason people can check at a glance ("because you saved X").
+    """
+    explained = [c for c in items if c.embedding is not None]
+    if len(saved) == 0 or not explained:
+        return
+    vectors = np.stack([c.embedding.to_numpy() for c in explained])
+    for c, i in zip(explained, (vectors @ saved.T).argmax(axis=1), strict=True):
+        c.because = saved_titles[i]
+
+
 SEEN = "select paper_id from events where user_id = %(user)s and kind in ('save', 'dismiss')"
 
 BY_SIMILARITY = f"""
-select id, title, tldr, abstract, authors, categories, published_at,
+select id, title, tldr, abstract, authors, categories, published_at, embedding,
        1 - (embedding <=> %(profile)s) as similarity
 from papers
 where embedding is not null
@@ -80,7 +97,8 @@ limit %(k)s
 
 # Cold start: nothing saved yet, so fall back to the newest papers in picked categories.
 BY_CATEGORY = f"""
-select id, title, tldr, abstract, authors, categories, published_at, 0.0 as similarity
+select id, title, tldr, abstract, authors, categories, published_at, embedding,
+       0.0 as similarity
 from papers
 where categories && %(categories)s
   and published_at > now() - make_interval(days => %(days)s)
@@ -90,20 +108,21 @@ limit %(k)s
 """
 
 
-def _embeddings(conn: Connection, user_id: UUID, kind: str) -> np.ndarray:
+def _feedback(conn: Connection, user_id: UUID, kind: str) -> tuple[list[str], np.ndarray]:
+    # Distinct papers, so saving something twice doesn't count it twice.
     rows = conn.execute(
-        "select p.embedding from events e join papers p on p.id = e.paper_id "
-        "where e.user_id = %s and e.kind = %s and p.embedding is not null "
-        "order by e.created_at desc limit 200",
+        "select title, embedding from papers where embedding is not null and id in ("
+        "  select paper_id from events where user_id = %s and kind = %s"
+        "  order by created_at desc limit 200)",
         (user_id, kind),
     ).fetchall()
-    return np.array([r[0].to_numpy() for r in rows])
+    return [r[0] for r in rows], np.array([r[1].to_numpy() for r in rows])
 
 
 def feed(conn: Connection, user_id: UUID, categories: list[str], limit: int) -> list[Candidate]:
-    profile = profile_vector(
-        _embeddings(conn, user_id, "save"), _embeddings(conn, user_id, "dismiss")
-    )
+    saved_titles, saved = _feedback(conn, user_id, "save")
+    _, dismissed = _feedback(conn, user_id, "dismiss")
+    profile = profile_vector(saved, dismissed)
     params = {
         "user": user_id,
         "profile": profile,
@@ -118,4 +137,6 @@ def feed(conn: Connection, user_id: UUID, categories: list[str], limit: int) -> 
         with conn.cursor(row_factory=class_row(Candidate)) as cur:
             cur.execute(BY_SIMILARITY if profile is not None else BY_CATEGORY, params)
             candidates = cur.fetchall()
-    return rerank(candidates, set(categories), datetime.now(UTC))[:limit]
+    items = rerank(candidates, set(categories), datetime.now(UTC))[:limit]
+    explain(items, saved_titles, saved)
+    return items

@@ -4,132 +4,470 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xoult</title>
+<meta name="description" content="Today's arXiv papers, ranked by what you save.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M7 17l6 6L25 9' fill='none' stroke='%232b4bd6' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&display=swap">
 <style>
-  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --line: #e7e5e4; --accent: #b45309; }
+  :root {
+    --paper: #f7f8fa;
+    --ink: #1b2030;
+    --muted: #5e6677;
+    --rule: #e2e5eb;
+    --accent: #2b4bd6;
+    --accent-wash: rgb(43 75 214 / 0.07);
+    --serif: "STIX Two Text", Charter, Georgia, serif;
+    --sans: "IBM Plex Sans", system-ui, sans-serif;
+    --gutter: 2.75rem;
+    color-scheme: light;
+  }
   @media (prefers-color-scheme: dark) {
-    :root { --bg: #1c1917; --fg: #f5f5f4; --muted: #a8a29e; --line: #44403c; --accent: #f59e0b; }
+    :root {
+      --paper: #151821;
+      --ink: #e7e9ef;
+      --muted: #9aa1b1;
+      --rule: #2a2f3b;
+      --accent: #8ea2ff;
+      --accent-wash: rgb(142 162 255 / 0.1);
+      color-scheme: dark;
+    }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
-  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
-  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
-  h1 { font-size: 22px; margin: 0; }
-  a { color: var(--accent); }
-  .muted, small { color: var(--muted); }
-  article { border-bottom: 1px solid var(--line); padding: 16px 0; }
-  article h2 { font-size: 17px; margin: 0 0 4px; }
-  article h2 a { color: var(--fg); text-decoration: none; }
-  article h2 a:hover { text-decoration: underline; }
-  article p { margin: 8px 0; }
-  details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
-  .actions { display: flex; gap: 8px; margin-top: 8px; }
-  button { font: inherit; font-size: 14px; padding: 4px 12px; border: 1px solid var(--line);
-           border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
-  button:hover { border-color: var(--muted); }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .done { opacity: .45; }
-  label { display: block; margin: 6px 0; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 17px/1.55 var(--serif);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 2rem 1rem 5rem; }
+  a { color: inherit; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  /* Masthead */
+  .masthead {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
+    padding-bottom: 0.75rem; border-bottom: 1px solid var(--ink);
+  }
+  .wordmark { font-size: 1.75rem; font-weight: 600; letter-spacing: -0.01em; text-decoration: none; }
+  nav { display: flex; gap: 1.25rem; font: 500 0.875rem/1 var(--sans); }
+  nav a { text-decoration: none; color: var(--muted); padding: 0.25rem 0; }
+  nav a[aria-current="page"] { color: var(--ink); box-shadow: inset 0 -2px 0 var(--accent); }
+  .dateline { margin: 0.9rem 0 2rem; color: var(--muted); font-style: italic; }
+  .status { font: 0.9375rem/1.5 var(--sans); color: var(--muted); }
+  .status button { margin-left: 0.5rem; }
+
+  /* Entries: a ranked reading list, marked up like a printout */
+  .papers { list-style: none; margin: 0; padding: 0; }
+  .paper {
+    position: relative;
+    padding: 1.25rem 0 1.25rem var(--gutter);
+    border-bottom: 1px solid var(--rule);
+  }
+  .paper:focus { outline: none; }
+  .paper:focus-visible::after {
+    content: ""; position: absolute; left: calc(var(--gutter) - 0.9rem); top: 1.35rem; bottom: 1.35rem;
+    width: 2px; background: var(--accent);
+  }
+  .mark {
+    position: absolute; left: 0; top: 1.3rem; width: calc(var(--gutter) - 1.25rem);
+    text-align: right; font: 0.875rem/1.6 var(--sans); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .paper h2 { margin: 0; font-size: 1.1875rem; line-height: 1.3; font-weight: 600; }
+  .paper h2 a { text-decoration: none; }
+  .paper h2 a:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  .byline { margin: 0.3rem 0 0; font: 0.8125rem/1.5 var(--sans); color: var(--muted); }
+  .summary { margin: 0.6rem 0 0; max-width: 38rem; }
+  .because { margin: 0.5rem 0 0; font: 0.8125rem/1.5 var(--sans); color: var(--muted); }
+  .because cite { font: italic 0.875rem var(--serif); color: var(--ink); }
+  details { margin-top: 0.5rem; }
+  summary { font: 0.8125rem var(--sans); color: var(--muted); cursor: pointer; width: fit-content; }
+  details p { margin: 0.5rem 0 0; max-width: 38rem; font-size: 0.9375rem; color: var(--muted); }
+  .actions {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; margin-top: 0.85rem;
+    font: 0.8125rem/1 var(--sans);
+  }
+  .actions .cats { margin-left: auto; color: var(--muted); }
+  .btn {
+    padding: 0.45rem 0.85rem; border-radius: 4px; border: 1px solid var(--rule);
+    background: transparent; font: 500 0.8125rem/1 var(--sans);
+  }
+  .btn:hover { border-color: var(--muted); }
+  .btn.primary { border-color: var(--accent); color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-wash); }
+  .link { background: none; border: 0; padding: 0.45rem 0; color: var(--muted); text-decoration: underline;
+          text-underline-offset: 3px; font: inherit; }
+  .link:hover { color: var(--ink); }
+  .note { color: var(--muted); }
+
+  /* Triage marks: a tick in the margin, or the entry struck off the list */
+  .paper[data-state="saved"] .mark { color: var(--accent); font: 600 1.15rem/1.3 var(--serif); }
+  .paper[data-state="dismissed"] > :not(.actions):not(.mark) { opacity: 0.4; }
+  .paper[data-state="dismissed"] h2 { text-decoration: line-through; text-decoration-thickness: 1px; }
+  .paper > * { transition: opacity 160ms ease; }
+
+  .more { margin: 2rem 0 0 var(--gutter); }
+  .hint { margin: 3rem 0 0; font: 0.75rem/1.6 var(--sans); color: var(--muted); }
+  kbd { font: 500 0.75rem var(--sans); padding: 0.05rem 0.35rem; border: 1px solid var(--rule); border-radius: 3px; }
+
+  /* Onboarding */
+  .welcome { padding-top: 2.5rem; }
+  .welcome h1 { font-size: 1.75rem; line-height: 1.25; font-weight: 600; margin: 0 0 0.5rem; }
+  .welcome p { margin: 0 0 1.5rem; max-width: 34rem; color: var(--muted); }
+  fieldset { border: 0; margin: 0 0 1.75rem; padding: 0; }
+  legend { font: 500 0.875rem var(--sans); margin-bottom: 0.75rem; }
+  .choice { display: flex; gap: 0.75rem; align-items: baseline; padding: 0.55rem 0; border-bottom: 1px solid var(--rule); cursor: pointer; }
+  .choice input { accent-color: var(--accent); transform: translateY(1px); }
+  .choice span { font: 0.8125rem var(--sans); color: var(--muted); }
+
+  /* Stats */
+  table { width: 100%; border-collapse: collapse; font: 0.875rem/1.4 var(--sans); font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--ink); padding: 0.5rem 0.75rem 0.5rem 0; }
+  td { border-bottom: 1px solid var(--rule); padding: 0.6rem 0.75rem 0.6rem 0; }
+  th:not(:first-child), td:not(:first-child) { text-align: right; }
+  .explainer { color: var(--muted); max-width: 36rem; }
+
+  .footer { margin-top: 1rem; font: 0.75rem var(--sans); color: var(--muted); }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  @media (max-width: 560px) {
+    :root { --gutter: 1.9rem; }
+    .mark { width: 1.2rem; }
+    .actions .cats { margin-left: 0; width: 100%; }
+    .hint { display: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>xoult</h1>
-    <small><a href="/stats">stats</a> · <a href="#" id="reset">reset</a></small>
+  <header class="masthead">
+    <a class="wordmark" href="#today">xoult</a>
+    <nav aria-label="Sections">
+      <a href="#today">Today</a>
+      <a href="#saved">Saved <span id="saved-count"></span></a>
+      <a href="#stats">Stats</a>
+    </nav>
   </header>
-  <section id="onboarding" hidden>
-    <p>Pick the arXiv categories you follow. Save papers you like and dismiss ones you don't;
-       the feed learns from both.</p>
-    <form id="pick"></form>
-  </section>
-  <p id="status" class="muted"></p>
-  <section id="feed"></section>
+  <div id="view"></div>
+  <p class="sr-only" aria-live="polite" id="announce"></p>
 </main>
 <script>
-const $ = (sel) => document.querySelector(sel);
+"use strict";
+
+const NAMES = {
+  "cs.AI": "Artificial Intelligence", "cs.CL": "Computation and Language",
+  "cs.CV": "Computer Vision", "cs.IR": "Information Retrieval",
+  "cs.LG": "Machine Learning", "stat.ML": "Machine Learning (Statistics)",
+};
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const view = $("#view");
+
 const store = {
   get() { try { return localStorage.getItem("xoult-user"); } catch { return null; } },
   set(v) { try { v ? localStorage.setItem("xoult-user", v) : localStorage.removeItem("xoult-user"); } catch {} },
 };
 
+// Skips null children so optional parts can be written inline as `cond ? el(...) : null`.
+function append(node, ...children) {
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+}
+
+function el(tag, props = {}, ...children) {
+  return append(Object.assign(document.createElement(tag), props), ...children);
+}
+
+function say(message) { $("#announce").textContent = message; }
+
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...options });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  if (!res.ok) {
+    const err = new Error(`${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
   return res.status === 204 ? null : res.json();
 }
 
-function sendEvent(paperId, kind) {
-  // keepalive lets the click event survive navigating away to arXiv.
+function track(paperId, kind) {
+  // keepalive lets a click survive the tab navigating to arXiv.
   return fetch("/events", {
     method: "POST", keepalive: true, headers: { "content-type": "application/json" },
     body: JSON.stringify({ user_id: store.get(), paper_id: paperId, kind }),
   });
 }
 
-function el(tag, props = {}, ...children) {
-  const node = Object.assign(document.createElement(tag), props);
-  node.append(...children);
+function untrack(paperId, kind) {
+  const q = new URLSearchParams({ user_id: store.get(), paper_id: paperId, kind });
+  return fetch(`/events?${q}`, { method: "DELETE" });
+}
+
+function authors(list) {
+  if (list.length <= 3) return list.join(", ");
+  return `${list.slice(0, 3).join(", ")} and ${list.length - 3} more`;
+}
+
+function failure(retry) {
+  return el("p", { className: "status" },
+    "Couldn't reach the server. On the free plan it sleeps when idle and takes up to a minute to start.",
+    el("button", { className: "btn", textContent: "Try again", onclick: retry }));
+}
+
+/* ---------- Today ---------- */
+
+let lastAction = null;  // { node, paper, kind } for undo
+let savedCount = 0;
+
+function setSavedCount(n) {
+  savedCount = Math.max(0, n);
+  $("#saved-count").textContent = savedCount ? `(${savedCount})` : "";
+}
+
+function entry(p, rank, { saved = false } = {}) {
+  const url = `https://arxiv.org/abs/${p.id}`;
+  const node = el("li", { className: "paper", tabIndex: -1 });
+  node.dataset.id = p.id;
+
+  const title = el("a", { href: url, target: "_blank", rel: "noopener", textContent: p.title });
+  title.addEventListener("click", () => track(p.id, "click"));
+
+  const summary = p.tldr ?? `${p.abstract.slice(0, 260).trimEnd()}…`;
+  const actions = el("div", { className: "actions" });
+
+  append(node,
+    el("span", { className: "mark", textContent: saved ? "✓" : String(rank), ariaHidden: "true" }),
+    el("h2", {}, title),
+    el("p", { className: "byline", textContent: authors(p.authors) }),
+    el("p", { className: "summary", textContent: summary }),
+    p.because ? el("p", { className: "because" }, "Because you saved ", el("cite", { textContent: p.because })) : null,
+    el("details", {}, el("summary", { textContent: "Abstract" }), el("p", { textContent: p.abstract })),
+    actions,
+  );
+
+  const links = [
+    el("a", { className: "link", href: `https://arxiv.org/pdf/${p.id}`, target: "_blank", rel: "noopener", textContent: "PDF" }),
+    el("span", { className: "cats", textContent: p.categories.slice(0, 3).join("  ") }),
+  ];
+
+  const idle = () => {
+    node.dataset.state = "";
+    $(".mark", node).textContent = String(rank);
+    actions.replaceChildren(
+      el("button", { className: "btn primary", textContent: "Save", onclick: () => act(node, p, "save") }),
+      el("button", { className: "btn", textContent: "Not for me", onclick: () => act(node, p, "dismiss") }),
+      ...links,
+    );
+  };
+  const done = (kind) => {
+    node.dataset.state = kind === "save" ? "saved" : "dismissed";
+    if (kind === "save") $(".mark", node).textContent = "✓";
+    actions.replaceChildren(
+      el("span", { className: "note", textContent: kind === "save" ? "Saved" : "Hidden from your feed" }),
+      el("button", { className: "link", textContent: "Undo", onclick: () => undo(node, p, kind) }),
+      ...links,
+    );
+  };
+  node._idle = idle;
+  node._done = done;
+
+  if (saved) {
+    node.dataset.state = "saved";
+    actions.replaceChildren(
+      el("a", { className: "link", href: `https://arxiv.org/bibtex/${p.id}`, target: "_blank", rel: "noopener", textContent: "BibTeX" }),
+      el("button", { className: "link", textContent: "Remove", onclick: async () => {
+        await untrack(p.id, "save");
+        node.remove();
+        setSavedCount(savedCount - 1);
+        $(".dateline").textContent = savedLine(savedCount);
+        say("Removed from saved");
+      } }),
+      ...links,
+    );
+  } else {
+    idle();
+  }
   return node;
 }
 
-function card(p) {
-  const url = `https://arxiv.org/abs/${p.id}`;
-  const link = el("a", { href: url, target: "_blank", rel: "noopener", textContent: p.title });
-  link.addEventListener("click", () => sendEvent(p.id, "click"));
-  const authors = p.authors.slice(0, 3).join(", ") + (p.authors.length > 3 ? " et al." : "");
-  const article = el("article", {},
-    el("h2", {}, link),
-    el("small", { textContent: `${authors} · ${p.categories.slice(0, 3).join(", ")} · ${p.published_at.slice(0, 10)}` }),
-    el("p", { textContent: p.tldr ?? p.abstract.slice(0, 280) + "…" }),
-    el("details", {}, el("summary", { textContent: "abstract" }), el("p", { textContent: p.abstract })),
-  );
-  const actions = el("div", { className: "actions" });
-  for (const [kind, label, cls] of [["save", "Save", "primary"], ["dismiss", "Not for me", ""]]) {
-    const b = el("button", { textContent: label, className: cls });
-    b.addEventListener("click", async () => {
-      await sendEvent(p.id, kind);
-      article.classList.add("done");
-      actions.replaceChildren(el("small", { textContent: kind === "save" ? "saved" : "dismissed" }));
-    });
-    actions.append(b);
-  }
-  article.append(actions);
-  return article;
+async function act(node, p, kind) {
+  node._done(kind);
+  lastAction = { node, p, kind };
+  if (kind === "save") setSavedCount(savedCount + 1);
+  say(kind === "save" ? "Saved" : "Hidden");
+  const res = await track(p.id, kind);
+  if (!res.ok) { node._idle(); if (kind === "save") setSavedCount(savedCount - 1); say("That didn't save. Try again."); }
 }
 
-async function loadFeed() {
-  $("#status").textContent = "Loading…";
+async function undo(node, p, kind) {
+  node._idle();
+  if (kind === "save") setSavedCount(savedCount - 1);
+  lastAction = null;
+  say("Undone");
+  await untrack(p.id, kind);
+  node.focus();
+}
+
+function dateline(feed) {
+  if (!feed.latest_date) return "No papers yet. The first batch arrives with the next weekday ingest.";
+  const day = new Date(feed.latest_date).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  const ranked = feed.items.some((i) => i.because)
+    ? "Ranked by what you've saved."
+    : "Ranked by your categories until you save a few.";
+  return `${feed.latest_count.toLocaleString()} new papers announced ${day}. ${ranked}`;
+}
+
+async function renderToday() {
+  view.replaceChildren(el("p", { className: "status", textContent: "Ranking today's papers…" }));
+  let feed;
   try {
-    const feed = await api(`/feed?user_id=${store.get()}&limit=20`);
-    $("#feed").replaceChildren(...feed.items.map(card));
-    $("#status").textContent = feed.items.length ? "" : "No papers yet. The next ingest runs daily.";
+    feed = await api(`/feed?user_id=${store.get()}&limit=20`);
   } catch (e) {
-    if (String(e).startsWith("404")) { store.set(null); return start(); }
-    $("#status").textContent = "Couldn't load the feed. The server may be waking up; retry in a minute.";
+    if (e.status === 404) { store.set(null); return route(); }
+    return view.replaceChildren(failure(renderToday));
   }
+  lastAction = null;
+  const list = el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)));
+  view.replaceChildren(
+    el("p", { className: "dateline", textContent: dateline(feed) }),
+    feed.items.length ? list : el("p", { className: "status", textContent: "You've been through everything from the last week. New papers arrive each weekday." }),
+    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: () => { renderToday(); scrollTo(0, 0); } }) : null,
+    el("p", { className: "hint" },
+      el("kbd", { textContent: "j" }), " ", el("kbd", { textContent: "k" }), " move   ",
+      el("kbd", { textContent: "s" }), " save   ",
+      el("kbd", { textContent: "x" }), " not for me   ",
+      el("kbd", { textContent: "o" }), " open   ",
+      el("kbd", { textContent: "a" }), " abstract   ",
+      el("kbd", { textContent: "u" }), " undo"),
+  );
 }
 
-async function start() {
-  if (store.get()) { $("#onboarding").hidden = true; return loadFeed(); }
-  const cats = await api("/categories");
-  const form = $("#pick");
-  form.replaceChildren(
-    ...cats.map((c) => el("label", {}, el("input", { type: "checkbox", value: c, checked: true }), " " + c)),
-    el("button", { className: "primary", textContent: "Start" }),
+/* ---------- Saved ---------- */
+
+const savedLine = (n) => (n
+  ? `${n} saved, most recent first. Each one shapes your ranking.`
+  : "Nothing saved yet. Save papers from Today and they collect here.");
+
+async function renderSaved() {
+  view.replaceChildren(el("p", { className: "status", textContent: "Loading saved papers…" }));
+  let papers;
+  try {
+    papers = await api(`/saved?user_id=${store.get()}`);
+  } catch (e) {
+    if (e.status === 404) { store.set(null); return route(); }
+    return view.replaceChildren(failure(renderSaved));
+  }
+  setSavedCount(papers.length);
+  view.replaceChildren(
+    el("p", { className: "dateline", textContent: savedLine(papers.length) }),
+    el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true }))),
   );
-  form.onsubmit = async (e) => {
+}
+
+/* ---------- Stats ---------- */
+
+async function renderStats() {
+  view.replaceChildren(el("p", { className: "status", textContent: "Loading…" }));
+  let rows;
+  try { rows = await api("/stats"); } catch { return view.replaceChildren(failure(renderStats)); }
+  const pct = (v) => (v === null ? "–" : `${(v * 100).toFixed(1)}%`);
+  view.replaceChildren(
+    el("p", { className: "dateline", textContent: "How each version of the ranking performs for all readers over the last 14 days." }),
+    rows.length
+      ? el("table", {},
+          el("thead", {}, el("tr", {}, ...["Ranking", "Readers", "Shown", "Saved", "Not for me", "Opened"].map((h) => el("th", { textContent: h })))),
+          el("tbody", {}, ...rows.map((r) => el("tr", {},
+            el("td", { textContent: r.ranker }),
+            el("td", { textContent: r.users.toLocaleString() }),
+            el("td", { textContent: r.impressions.toLocaleString() }),
+            el("td", { textContent: pct(r.save_rate) }),
+            el("td", { textContent: pct(r.dismiss_rate) }),
+            el("td", { textContent: pct(r.ctr) }),
+          ))))
+      : el("p", { className: "status", textContent: "No activity in the last 14 days." }),
+    el("p", { className: "explainer" },
+      "Save rate is the share of shown papers that readers saved. It is the number a new ranking has to beat before it replaces the current one."),
+  );
+}
+
+/* ---------- Onboarding ---------- */
+
+async function renderWelcome() {
+  let cats;
+  try { cats = await api("/categories"); } catch { return view.replaceChildren(failure(renderWelcome)); }
+  const form = el("form", {},
+    el("fieldset", {},
+      el("legend", { textContent: "Categories you follow" }),
+      ...cats.map((c) => el("label", { className: "choice" },
+        el("input", { type: "checkbox", name: "c", value: c, checked: true }),
+        c, NAMES[c] ? el("span", { textContent: NAMES[c] }) : null))),
+    el("button", { className: "btn primary", type: "submit", textContent: "Start reading" }),
+  );
+  form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const picked = [...form.querySelectorAll("input:checked")].map((i) => i.value);
-    if (!picked.length) return;
-    const user = await api("/users", { method: "POST", body: JSON.stringify({ categories: picked }) });
-    store.set(user.id);
-    start();
-  };
-  $("#onboarding").hidden = false;
+    if (!picked.length) return say("Pick at least one category.");
+    try {
+      const user = await api("/users", { method: "POST", body: JSON.stringify({ categories: picked }) });
+      store.set(user.id);
+      location.hash = "#today";
+      route();
+    } catch { view.append(failure(() => form.requestSubmit())); }
+  });
+  view.replaceChildren(el("section", { className: "welcome" },
+    el("h1", { textContent: "A short list from today's arXiv" }),
+    el("p", { textContent: "Over a thousand papers are announced each weekday. Save the ones worth reading and mark the rest as not for you; the list reorders around what you save. No account needed." }),
+    form,
+  ));
 }
 
-$("#reset").addEventListener("click", (e) => { e.preventDefault(); store.set(null); $("#feed").replaceChildren(); start(); });
-start();
+/* ---------- Routing and keyboard ---------- */
+
+function route() {
+  const page = location.hash.slice(1) || "today";
+  for (const a of document.querySelectorAll("nav a")) {
+    if (a.hash === `#${page}` && store.get()) a.setAttribute("aria-current", "page");
+    else a.removeAttribute("aria-current");
+  }
+  if (!store.get()) return renderWelcome();
+  if (page === "saved") return renderSaved();
+  if (page === "stats") return renderStats();
+  return renderToday();
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  const items = [...document.querySelectorAll(".paper")];
+  if (!items.length) return;
+  const current = items.indexOf(document.activeElement.closest?.(".paper"));
+  const focus = (i) => { const n = items[Math.max(0, Math.min(items.length - 1, i))]; n.focus(); n.scrollIntoView({ block: "nearest" }); };
+  const node = items[current];
+  const click = (sel) => { const b = node && $(sel, node); if (b) b.click(); };
+  switch (e.key) {
+    case "j": focus(current + 1); break;
+    case "k": focus(current < 0 ? 0 : current - 1); break;
+    case "s": if (node && !node.dataset.state) { click(".btn.primary"); focus(current + 1); } break;
+    case "x": if (node && !node.dataset.state) { click(".btn:not(.primary)"); focus(current + 1); } break;
+    case "o": click("h2 a"); break;
+    case "a": if (node) { const d = $("details", node); d.open = !d.open; } break;
+    case "u": if (lastAction) undo(lastAction.node, lastAction.p, lastAction.kind); break;
+    default: return;
+  }
+  e.preventDefault();
+});
+
+window.addEventListener("hashchange", route);
+
+(async () => {
+  if (store.get()) {
+    try { setSavedCount((await api(`/saved?user_id=${store.get()}`)).length); } catch {}
+  }
+  route();
+})();
 </script>
 </body>
 </html>

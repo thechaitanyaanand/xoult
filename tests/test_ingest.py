@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from xoult.ingest import parse_feed
+from xoult.ingest import _clean, parse_feed
 from xoult.llm import clean_tldr
 
 ITEM = """<item>
@@ -51,10 +51,23 @@ def test_parse_feed_skips_replacements():
     assert [p.id for p in papers] == ["2610.00001", "2610.00002"]
 
 
+def test_clean_decodes_tex_accents():
+    assert _clean('Ga\\"etan Patinier') == "Gaëtan Patinier"
+    assert _clean("Cl\\'ement B\\'enard") == "Clément Bénard"
+    assert _clean('Bernhard Sch{\\"o}lkopf') == "Bernhard Schölkopf"
+    assert (
+        _clean("Fran\\c{c}ois, Jos\\'{e}, \\'{\\i}cono, Du\\v{s}an")
+        == "François, José, ícono, Dušan"
+    )
+    # TeX commands that aren't accents are left alone
+    assert _clean("$\\mathcal{O}(n)$ via \\cite") == "$\\mathcal{O}(n)$ via \\cite"
+
+
 def test_clean_tldr():
     assert (
         clean_tldr('TL;DR: "Proposes X; beats Y by 3 points."')
         == "Proposes X; beats Y by 3 points."
     )
+    assert clean_tldr("**TLDR:** GameSmith scales *self-play*.") == "GameSmith scales self-play."
     assert clean_tldr("   ") is None
     assert clean_tldr("word " * 80) is None

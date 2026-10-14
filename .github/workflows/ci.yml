@@ -11,6 +11,21 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # A throwaway database so tests/test_api.py exercises real SQL and pgvector.
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: xoult
+          POSTGRES_PASSWORD: xoult
+          POSTGRES_DB: xoult_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U xoult"
+          --health-interval 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://xoult:xoult@localhost:5432/xoult_test
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

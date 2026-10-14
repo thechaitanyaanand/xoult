@@ -7,7 +7,7 @@ load_dotenv()
 
 
 class Settings(BaseSettings):
-    database_url: str = "postgresql://xoult:xoult@localhost:5432/xoult"
+    database_url: str = "postgresql://xoult:xoult@localhost:5433/xoult"
     sentry_dsn: str | None = None
 
     arxiv_categories: list[str] = ["cs.CL", "cs.IR", "cs.LG"]

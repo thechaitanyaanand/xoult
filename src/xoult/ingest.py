@@ -2,6 +2,7 @@ import argparse
 import logging
 import re
 import time
+import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,8 +35,18 @@ class Paper:
     published_at: datetime
 
 
-def _squash(text: str | None) -> str:
-    return " ".join((text or "").split())
+# arXiv metadata keeps TeX accent escapes: Ga\"etan, Cl\'ement, Sch{\"o}lkopf, \c{c}.
+ACCENTS = {
+    '"': "̈", "'": "́", "`": "̀", "^": "̂", "~": "̃", "=": "̄",
+    ".": "̇", "c": "̧", "v": "̌", "u": "̆", "H": "̋",
+}  # fmt: skip
+TEX_ACCENT = re.compile(r"""\{?\\(["'`^~=.]|[cvuH](?=[\s{]))\s*\{?\\?([A-Za-z])\}?\}?""")
+
+
+def _clean(text: str | None) -> str:
+    text = " ".join((text or "").split())
+    text = TEX_ACCENT.sub(lambda m: m[2] + ACCENTS[m[1]], text)
+    return unicodedata.normalize("NFC", text)
 
 
 def parse_feed(xml: str) -> list[Paper]:
@@ -49,9 +60,9 @@ def parse_feed(xml: str) -> list[Paper]:
         papers.append(
             Paper(
                 id=re.sub(r"v\d+$", "", link.rsplit("/abs/", 1)[-1]),
-                title=_squash(item.findtext("title")),
-                abstract=_squash(abstract),
-                authors=[_squash(a) for a in authors.split(",") if a.strip()],
+                title=_clean(item.findtext("title")),
+                abstract=_clean(abstract),
+                authors=[_clean(a) for a in authors.split(",") if a.strip()],
                 categories=[c.text for c in item.iterfind("category") if c.text],
                 published_at=parsedate_to_datetime(item.findtext("pubDate", "")),
             )

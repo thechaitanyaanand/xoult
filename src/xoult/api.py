@@ -32,7 +32,7 @@ class Event(BaseModel):
     kind: Literal["click", "save", "dismiss"]  # impressions are only logged server-side
 
 
-class FeedItem(BaseModel):
+class Paper(BaseModel):
     id: str
     title: str
     tldr: str | None
@@ -42,9 +42,22 @@ class FeedItem(BaseModel):
     published_at: datetime
 
 
+class FeedItem(Paper):
+    because: str | None = None
+
+
 class Feed(BaseModel):
     ranker: str
+    latest_date: datetime | None  # most recent arXiv announcement in the database
+    latest_count: int
     items: list[FeedItem]
+
+
+def _user_categories(conn, user_id: UUID) -> list[str]:
+    row = conn.execute("select categories from users where id = %s", (user_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "unknown user")
+    return row[0]
 
 
 # Endpoints are sync on purpose: psycopg calls block, and FastAPI runs sync handlers
@@ -80,17 +93,42 @@ def create_user(body: NewUser) -> dict:
 @app.get("/feed")
 def get_feed(user_id: UUID, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> Feed:
     with get_pool().connection() as conn:
-        row = conn.execute("select categories from users where id = %s", (user_id,)).fetchone()
-        if row is None:
-            raise HTTPException(404, "unknown user")
-        items = rank.feed(conn, user_id, row[0], limit)
+        items = rank.feed(conn, user_id, _user_categories(conn, user_id), limit)
         with conn.cursor() as cur:
             cur.executemany(
                 "insert into events (user_id, paper_id, kind, ranker) "
                 "values (%s, %s, 'impression', %s)",
                 [(user_id, item.id, rank.RANKER) for item in items],
             )
-    return Feed(ranker=rank.RANKER, items=[FeedItem(**vars(item)) for item in items])
+        latest = conn.execute(
+            "select published_at, count(*) from papers "
+            "group by published_at order by published_at desc limit 1"
+        ).fetchone() or (None, 0)
+    return Feed(
+        ranker=rank.RANKER,
+        latest_date=latest[0],
+        latest_count=latest[1],
+        items=[FeedItem.model_validate(item, from_attributes=True) for item in items],
+    )
+
+
+@app.get("/saved")
+def get_saved(user_id: UUID) -> list[Paper]:
+    with get_pool().connection() as conn:
+        _user_categories(conn, user_id)
+        rows = conn.execute(
+            """
+            select p.id, p.title, p.tldr, p.abstract, p.authors, p.categories, p.published_at
+            from papers p
+            join (
+                select paper_id, max(created_at) as saved_at from events
+                where user_id = %s and kind = 'save' group by paper_id
+            ) s on s.paper_id = p.id
+            order by s.saved_at desc
+            """,
+            (user_id,),
+        ).fetchall()
+    return [Paper(**dict(zip(Paper.model_fields, row, strict=True))) for row in rows]
 
 
 @app.post("/events", status_code=204)
@@ -111,6 +149,24 @@ def log_event(event: Event) -> None:
             )
     except psycopg.errors.ForeignKeyViolation:
         raise HTTPException(404, "unknown user or paper") from None
+
+
+@app.delete("/events", status_code=204)
+def undo_event(
+    user_id: UUID,
+    paper_id: Annotated[str, Query(max_length=32)],
+    kind: Literal["save", "dismiss"],
+) -> None:
+    """Undo a save or dismiss, e.g. a misclick or removing a paper from the saved list.
+
+    The rows are deleted rather than countered with a new event, so the profile and
+    the save-rate metric both behave as if the action never happened.
+    """
+    with get_pool().connection() as conn:
+        conn.execute(
+            "delete from events where user_id = %s and paper_id = %s and kind = %s",
+            (user_id, paper_id, kind),
+        )
 
 
 @app.get("/stats")

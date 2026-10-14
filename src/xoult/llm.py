@@ -30,6 +30,8 @@ def complete(messages: list[dict], name: str, models: list[str] | None = None, *
 
 
 def clean_tldr(text: str) -> str | None:
+    # Models add markdown despite the prompt ("**TLDR:** ..."); the UI shows plain text.
+    text = re.sub(r"[*#`]+", "", text)
     text = re.sub(r"^\s*(tl;?dr|summary)\s*:\s*", "", text.strip(), flags=re.I)
     text = " ".join(text.split()).strip("\"'")
     if not text or len(text.split()) > 60:
