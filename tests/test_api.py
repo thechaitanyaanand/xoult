@@ -109,7 +109,20 @@ def test_discovery_files(browser, monkeypatch):
 
     robots = browser.get("/robots.txt").text
     assert "Disallow: /me" in robots and "Sitemap: http://testserver/sitemap.xml" in robots
-    assert "<loc>http://testserver/</loc>" in browser.get("/sitemap.xml").text
+    sitemap = browser.get("/sitemap.xml").text
+    assert "<loc>http://testserver/</loc>" in sitemap
+    assert "<loc>http://testserver/papers/cs.IR</loc>" in sitemap
+
+    # The daily lists are plain HTML: every paper in the category, none from others.
+    latest = browser.get("/papers/cs.IR")
+    assert latest.status_code == 200 and "public" in latest.headers["cache-control"]
+    assert "Retrieval paper 0" in latest.text and "Vision paper 1" not in latest.text
+    assert 'rel="canonical" href="http://testserver/papers/cs.IR"' in latest.text
+    day = sitemap.split("/papers/cs.IR/")[1][:10]
+    assert "Retrieval paper 2" in browser.get(f"/papers/cs.IR/{day}").text
+    assert browser.get("/papers/cs.IR/2001-01-01").status_code == 404
+    assert browser.get("/papers/math.AG").status_code == 404
+    assert browser.get("/papers/cs.IR/not-a-date").status_code == 422
     llms = browser.get("/llms.txt").text
     assert llms.startswith("# xoult") and "cs.CV (Computer Vision)" in llms
 

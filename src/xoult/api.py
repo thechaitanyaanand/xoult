@@ -1,7 +1,8 @@
 import threading
 import time
 from collections import Counter
-from datetime import datetime
+from datetime import date, datetime
+from html import escape
 from pathlib import Path
 from typing import Annotated, Literal
 from uuid import UUID
@@ -209,16 +210,119 @@ def robots(request: Request) -> PlainTextResponse:
     )
 
 
+def _days(conn, category: str) -> list[date]:
+    """Announcement days still worth a page for a category, newest first.
+
+    Older days have been pruned down to the papers someone saved, which would make
+    thin pages, so they 404 and drop out of the index.
+    """
+    return [
+        d
+        for (d,) in conn.execute(
+            "select distinct (published_at at time zone 'UTC')::date from papers "
+            "where %s = any(categories) and published_at > now() - make_interval(days => %s) "
+            "order by 1 desc",
+            (category, settings.keep_papers_days),
+        ).fetchall()
+    ]
+
+
 @app.get("/sitemap.xml", include_in_schema=False)
 def sitemap(request: Request) -> Response:
+    origin = _origin(request)
+    urls = [f"<url><loc>{origin}/</loc><changefreq>daily</changefreq></url>"]
+    with get_pool().connection() as conn:
+        for c in settings.arxiv_categories:
+            days = _days(conn, c)
+            if days:
+                urls.append(
+                    f"<url><loc>{origin}/papers/{c}</loc><lastmod>{days[0]}</lastmod>"
+                    "<changefreq>daily</changefreq></url>"
+                )
+            urls += [
+                f"<url><loc>{origin}/papers/{c}/{d}</loc><lastmod>{d}</lastmod></url>" for d in days
+            ]
+    urls.append(f"<url><loc>{origin}/llms.txt</loc></url>")
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
-        f"  <url><loc>{_origin(request)}/</loc><changefreq>daily</changefreq></url>\n"
-        f"  <url><loc>{_origin(request)}/llms.txt</loc></url>\n"
-        "</urlset>\n"
+        + "".join(f"  {u}\n" for u in urls)
+        + "</urlset>\n"
     )
     return Response(xml, media_type="application/xml")
+
+
+@app.get("/papers/{category}", include_in_schema=False)
+@app.get("/papers/{category}/{day}", include_in_schema=False)
+def papers_page(request: Request, category: str, day: date | None = None) -> HTMLResponse:
+    """One category's papers for one day, as plain HTML that search engines can index.
+
+    The bare category URL shows the newest day, so it can rank for "new cs.CL papers".
+    """
+    # ponytail: two queries per crawl hit, uncached; add a cache keyed on (category, day)
+    # if crawlers ever show up in database load.
+    if category not in settings.arxiv_categories:
+        raise HTTPException(404, "Unknown category")
+    with get_pool().connection() as conn:
+        days = _days(conn, category)
+        shown = day or (days[0] if days else None)
+        if shown not in days:
+            raise HTTPException(404, "No papers for that day")
+        rows = conn.execute(
+            "select id, title, tldr, abstract, authors from papers "
+            "where %s = any(categories) and (published_at at time zone 'UTC')::date = %s "
+            "order by id",
+            (category, shown),
+        ).fetchall()
+
+    origin, name = _origin(request), CATEGORY_NAMES.get(category, category)
+    when = f"{shown:%A} {shown.day} {shown:%B %Y}"
+    title = f"New {category} papers on arXiv, {shown.day} {shown:%b %Y}: {name} | xoult"
+    description = (
+        f"All {len(rows)} new arXiv {category} ({name}) papers announced on {when}, "
+        "each with a one-line TLDR."
+    )
+    items = []
+    for pid, ptitle, tldr, abstract, authors in rows:
+        summary = tldr or (
+            abstract[:280].rsplit(" ", 1)[0] + "…" if len(abstract) > 280 else abstract
+        )
+        byline = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+        items.append(
+            f'<li><h2><a href="https://arxiv.org/abs/{escape(pid)}">{escape(ptitle)}</a></h2>'
+            f'<p class="meta">{escape(byline)} · arXiv:{escape(pid)}</p>'
+            f"<p>{escape(summary)}</p></li>"
+        )
+    others = " ".join(
+        f'<a href="/papers/{c}">{c}</a>' for c in settings.arxiv_categories if c != category
+    )
+    archive = " ".join(
+        f'<a href="/papers/{category}/{d}">{d:%d %b}</a>' for d in days if d != shown
+    )
+    body = (
+        f"<h1>New {escape(name)} ({category}) papers, {when}</h1>"
+        f'<p class="lede">{len(rows)} papers announced on arXiv. '
+        f'<a class="cta" href="/">Get them ranked for you, free →</a></p>'
+        f"<ol>{''.join(items)}</ol>"
+        f"<nav>Earlier days: {archive or 'none yet'}</nav>"
+        f"<nav>Other categories: {others}</nav>"
+    )
+    page = (STATIC / "papers.html").read_text(encoding="utf-8")
+    for key, value in {
+        "title": escape(title),
+        "description": escape(description),
+        "canonical": f"{origin}/papers/{category}" + (f"/{day}" if day else ""),
+        "origin": origin,
+        "body": body,  # already escaped piece by piece above
+    }.items():
+        page = page.replace("{{" + key + "}}", value)
+    return HTMLResponse(page, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/googlebf62e30f7f3ae670.html", include_in_schema=False)
+def google_verification() -> HTMLResponse:
+    # Proves ownership to Google Search Console; keep it, or the property unverifies.
+    return HTMLResponse("google-site-verification: googlebf62e30f7f3ae670.html")
 
 
 @app.get("/llms.txt", include_in_schema=False)
@@ -252,6 +356,8 @@ xoult covers {categories}. That is about 1,900 new papers a weekday.
 ## Links
 
 - [Home]({origin}/): the feed
+- [Daily list]({origin}/papers/cs.CL): every paper from the newest announcement in one
+  category, with TLDRs; /papers/<category> for the others
 - [Ranking stats]({origin}/stats): public save rate per ranker version, JSON, last 14 days
 """
     return PlainTextResponse(text)
