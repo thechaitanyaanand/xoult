@@ -23,6 +23,7 @@ import httpx
 import numpy as np
 
 from evals.metrics import ndcg_at_k, recall_at_k
+from xoult import lexical, rank
 from xoult.config import settings
 from xoult.embed import document_text, embed
 from xoult.rank import profile_vector
@@ -123,6 +124,30 @@ def maxsim_scorer(vectors: np.ndarray) -> Scorer:
     return lambda trains: np.stack([(vectors[t] @ vectors.T).max(axis=0) for t in trains])
 
 
+def hybrid_scorer(vectors: np.ndarray, docs: list[str]) -> Scorer:
+    """Production's two stages, built from the functions the API calls (rank.feed).
+
+    Stage 1 keeps the CANDIDATES papers nearest the reader's profile; stage 2 reorders
+    them by embedding + TF-IDF relevance, with IDF from the saved papers and those
+    candidates only. Everything below the cut keeps its stage-1 order.
+    """
+    tokens = [lexical.tokenize(d) for d in docs]
+    empty = np.empty((0, vectors.shape[1]))
+
+    def score(trains):
+        out = np.empty((len(trains), vectors.shape[0]), dtype=np.float32)
+        for row, train in zip(out, trains, strict=True):
+            sim = vectors @ profile_vector(vectors[train], empty)
+            sim[train] = -np.inf
+            top = np.argpartition(-sim, rank.CANDIDATES)[: rank.CANDIDATES]
+            lex = lexical.scores([tokens[i] for i in train], [tokens[i] for i in top])
+            row[:] = sim - 1e6  # below every reranked candidate, in stage-1 order
+            row[top] = rank.relevance(sim[top], lex)
+        return out
+
+    return score
+
+
 def embeddings(docs: list[str], model: str) -> np.ndarray:
     cache = DATA / f"emb-{model.replace('/', '__')}.npy"
     if not cache.exists():
@@ -145,7 +170,7 @@ def main() -> None:
     n = len(docs)
     print(f"{len(users)} users, {n} papers, {sum(len(t) for _, t in splits)} held-out saves")
 
-    production = f"centroid / {settings.embedding_model}"
+    production = f"hybrid top-{rank.CANDIDATES} / {settings.embedding_model}"
     results = {}
 
     def run(name: str, scorer: Scorer) -> None:
@@ -162,6 +187,8 @@ def main() -> None:
     for model in [settings.embedding_model] + (EXTRA_MODELS if args.all else []):
         vectors = embeddings(docs, model)
         run(f"centroid / {model}", centroid_scorer(vectors))
+        if model == settings.embedding_model:
+            run(production, hybrid_scorer(vectors, docs))
         if args.all:
             run(f"max-sim / {model}", maxsim_scorer(vectors))
 

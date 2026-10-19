@@ -4,15 +4,12 @@ import numpy as np
 from fastembed import TextEmbedding
 
 from xoult.config import settings
+from xoult.lexical import document_text  # noqa: F401 (re-exported for ingest and evals)
 
 
 @cache
 def _model(name: str) -> TextEmbedding:
     return TextEmbedding(name)
-
-
-def document_text(title: str, abstract: str) -> str:
-    return f"{title}. {abstract}"
 
 
 def embed(
