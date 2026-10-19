@@ -9,6 +9,7 @@ from uuid import UUID
 import psycopg
 import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from google.auth.transport import requests as google_requests
@@ -53,6 +54,8 @@ CSP = "; ".join(
     ]
 )
 
+PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config")
+
 app = FastAPI(title="xoult")
 app.add_middleware(
     SessionMiddleware,
@@ -62,6 +65,7 @@ app.add_middleware(
     same_site="lax",  # not sent on cross-site POST/DELETE, which is the CSRF defence
     https_only=settings.cookie_secure,
 )
+app.add_middleware(GZipMiddleware, minimum_size=1024)  # the feed's ~40 KB of JSON shrinks ~4×
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 
 
@@ -73,6 +77,9 @@ async def security_headers(request: Request, call_next):
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin-allow-popups"  # Google popup
     if not request.url.path.startswith(("/docs", "/redoc")):  # Swagger UI loads from a CDN
         response.headers["Content-Security-Policy"] = CSP
+    if request.url.path.startswith(PERSONAL):
+        # Someone's feed, saves or account must never sit in a proxy or a shared disk cache.
+        response.headers["Cache-Control"] = "no-store"
     if settings.cookie_secure:
         response.headers["Strict-Transport-Security"] = "max-age=31536000"
     return response
@@ -161,9 +168,11 @@ class User(BaseModel):
 def current_user(request: Request) -> User:
     uid = request.session.get("uid")
     if uid:
+        # Look the user up and mark them active in one round trip.
         with get_pool().connection() as conn:
             row = conn.execute(
-                "select id, categories, email, google_sub is not null from users where id = %s",
+                "update users set last_seen_at = now() where id = %s "
+                "returning id, categories, email, google_sub is not null",
                 (uid,),
             ).fetchone()
         if row:
@@ -234,10 +243,11 @@ xoult covers {categories}. That is about 1,900 new papers a weekday.
 ## How the ranking works
 
 - Papers are embedded with all-MiniLM-L6-v2. A reader's profile is the mean of their saved
-  papers moved away from dismissed ones (Rocchio), and a week of papers in their categories
-  is ranked by cosine similarity, recency and category match.
-- Offline evaluation on CiteULike-a (5,551 users' libraries): NDCG@10 of 0.1005 for the
-  production ranker, against 0.0886 for bge-small and 0.1016 for a TF-IDF baseline.
+  papers moved away from dismissed ones (Rocchio). The 200 papers from the past week in
+  their categories that are closest to it are reranked by embedding similarity blended
+  50/50 with TF-IDF similarity to the saved papers, plus recency and category match.
+- Offline evaluation on CiteULike-a (5,551 users' libraries): NDCG@10 of 0.1118 for the
+  production ranker, against 0.1005 for embeddings alone and 0.1016 for TF-IDF alone.
 
 ## Links
 
@@ -395,21 +405,33 @@ def delete_me(user: Me, request: Request) -> None:
     request.session.clear()
 
 
-@app.get("/feed", dependencies=[Depends(read_limit)])
-def get_feed(user: Me, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> Feed:
-    with get_pool().connection() as conn:
-        conn.execute("update users set last_seen_at = now() where id = %s", (user.id,))
-        items = rank.feed(conn, user.id, user.categories, limit)
-        with conn.cursor() as cur:
-            cur.executemany(
-                "insert into events (user_id, paper_id, kind, ranker) "
-                "values (%s, %s, 'impression', %s)",
-                [(user.id, item.id, rank.RANKER) for item in items],
-            )
-        latest = conn.execute(
+_latest: tuple[float, tuple] = (0.0, (None, 0))
+
+
+def _latest_announcement(conn) -> tuple:
+    """(date, paper count) of the newest arXiv batch. Changes only when ingest runs."""
+    global _latest
+    expires, value = _latest
+    if time.monotonic() > expires:
+        value = conn.execute(
             "select published_at, count(*) from papers "
             "group by published_at order by published_at desc limit 1"
         ).fetchone() or (None, 0)
+        _latest = (time.monotonic() + 300, value)
+    return value
+
+
+@app.get("/feed", dependencies=[Depends(read_limit)])
+def get_feed(user: Me, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> Feed:
+    with get_pool().connection() as conn:
+        items = rank.feed(conn, user.id, user.categories, limit)
+        # One statement for all impressions: executemany would be a round trip per row.
+        conn.execute(
+            "insert into events (user_id, paper_id, kind, ranker) "
+            "select %s, unnest(%s::text[]), 'impression', %s",
+            (user.id, [item.id for item in items], rank.RANKER),
+        )
+        latest = _latest_announcement(conn)
     return Feed(
         ranker=rank.RANKER,
         latest_date=latest[0],
@@ -482,10 +504,12 @@ def stats() -> list[dict]:
             """
             select ranker,
                    count(distinct user_id) as users,
-                   count(*) filter (where kind = 'impression') as impressions,
-                   count(*) filter (where kind = 'click') as clicks,
-                   count(*) filter (where kind = 'save') as saves,
-                   count(*) filter (where kind = 'dismiss') as dismisses
+                   -- A paper shown to someone five times (each re-rank shows it again)
+                   -- is one chance to save it, not five, or save rate reads too low.
+                   count(distinct (user_id, paper_id)) filter (where kind = 'impression'),
+                   count(distinct (user_id, paper_id)) filter (where kind = 'click'),
+                   count(distinct (user_id, paper_id)) filter (where kind = 'save'),
+                   count(distinct (user_id, paper_id)) filter (where kind = 'dismiss')
             from events
             where created_at > now() - interval '14 days' and ranker is not null
             group by ranker order by ranker

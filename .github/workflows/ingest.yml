@@ -36,5 +36,14 @@ jobs:
         with:
           path: .cache/fastembed
           key: fastembed-${{ hashFiles('evals/baseline.json') }}
+      - name: Check required secrets
+        run: |
+          missing=""
+          [ -z "$DATABASE_URL" ] && missing="$missing DATABASE_URL"
+          [ -z "$GROQ_API_KEY$GEMINI_API_KEY$OPENROUTER_API_KEY" ] && missing="$missing GROQ_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing (Settings → Secrets and variables → Actions)"
+            exit 1
+          fi
       - run: uv run python -m xoult.db
       - run: uv run python -m xoult.ingest

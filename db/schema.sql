@@ -43,6 +43,13 @@ create table if not exists events (
     created_at timestamptz not null default now()
 );
 
+-- Supabase serves every public table over its REST API to anyone with the project's
+-- public key. Row level security with no policies shuts that door; the app connects as
+-- the tables' owner, which RLS doesn't restrict. Harmless on plain Postgres.
+alter table papers enable row level security;
+alter table users enable row level security;
+alter table events enable row level security;
+
 create index if not exists events_user_idx on events (user_id, created_at desc);
 -- "has anyone been shown this paper?" when picking which TLDRs to write first
 create index if not exists events_paper_idx on events (paper_id, kind);

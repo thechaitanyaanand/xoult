@@ -29,6 +29,21 @@ People control their own data from Settings: change categories, download everyth
 (`GET /me/export`, JSON), or delete the account (`DELETE /me`; events go with it by
 `on delete cascade`).
 
+## What xoult uses from Supabase
+
+Only Postgres, through one secret: `DATABASE_URL`, the session pooler URI. Supabase's
+other credentials belong to features xoult doesn't use, so they're deliberately left out
+of every environment:
+
+| Supabase credential | What it's for | Why xoult doesn't need it |
+| --- | --- | --- |
+| Project URL + publishable (anon) key | Browser SDK calling Supabase's REST API | The browser only talks to our API. RLS with no policies blocks the REST API anyway |
+| Secret (service_role) key | Server SDK with admin rights, bypassing RLS | The server talks Postgres directly. An unused admin key is pure risk |
+| JWT secret / JWKS | Verifying Supabase Auth tokens | Identity is Google sign-in plus our own signed cookie, not Supabase Auth |
+
+Switching to Supabase Auth or Storage later would change that; until then, each extra
+key would be one more secret to leak for nothing.
+
 ## Identity and sessions
 
 - **Anonymous first.** Picking categories creates a `users` row and a session. Asking
@@ -106,6 +121,54 @@ The free quota is smaller than arXiv's output, so TLDRs go first to papers alrea
 shown to someone, then to followed categories, then to the newest. The 14:00 UTC run
 spends the next quota on what people saw that morning.
 
+## Caching
+
+The expensive things are already computed once and stored, which is the caching that
+matters here:
+
+| What | Cost to produce | Stored where | Reused by |
+| --- | --- | --- | --- |
+| TLDR | one LLM call, 1–3 s | `papers.tldr` | every reader, forever |
+| Embedding | ~10 ms of CPU | `papers.embedding` | every feed request |
+| Embedding model weights | ~90 MB download | GitHub Actions cache | every ingest run |
+| CiteULike embeddings (eval) | ~8 min | Actions cache, keyed on the model | every CI run |
+
+What is deliberately **not** cached:
+
+- **The personal feed** (~34 ms of compute). It changes with every save and dismiss, so
+  a cache would need invalidating on every event, and would also have to track what each
+  person was already shown. That's more code and more bugs than it saves. Network
+  distance mattered far more than compute: the database is a region away from the app,
+  so `/feed` was cut from about 14 database round trips to about 7, measured by adding
+  25 ms to every database reply:
+  - autocommit connections, so no separate BEGIN and COMMIT round trips;
+  - the session lookup also stamps "last seen", in the same query;
+  - saves and dismisses come back in one query, not two;
+  - impressions are logged in one statement, not one per paper;
+  - embeddings cross the network only for the 20 papers shown;
+  - "latest announcement" is cached for 5 minutes, since it changes only when ingest
+    runs.
+- **`/config`, `/stats`, `/saved`, `/me`:** 2–4 ms each. A cache would cost more than
+  it saves.
+- **No Redis.** With one instance, process memory already holds what needs holding (the
+  rate-limit counters). Redis becomes necessary at the second instance, for shared rate
+  limits, not before.
+
+HTTP caching:
+- Personal responses (`/feed`, `/saved`, `/me`, `/events`, `/auth/*`, `/config`) send
+  `Cache-Control: no-store`, so no proxy, CDN or shared machine keeps a copy of someone's
+  data.
+- Static files carry ETags, so a returning browser revalidates with a 304 instead of
+  downloading them again.
+- Responses over 1 KB are gzipped. The feed's ~40 KB of JSON shrinks about 4×, which
+  matters on slow phones.
+
+What would change this:
+- **Many readers per category combination:** cache the unranked candidate pool per
+  (categories, day) and rank per user in memory.
+- **Global audience or heavy traffic:** put Cloudflare's free CDN in front for static
+  files and DDoS/bot filtering. It needs a custom domain.
+
 ## Scale: what we don't run, and when we would
 
 Each item has a measured trigger and a migration path that the current design keeps
@@ -149,8 +212,8 @@ open.
 ### Fine-tuning
 
 - **Embedding model, not yet:** choosing among pretrained models already moved
-  NDCG@10 from 0.0886 to 0.1005, and adding lexical TF-IDF to 0.1138 (README), at no
-  training cost.
+  NDCG@10 from 0.0886 to 0.1005, and the shipped embedding + TF-IDF hybrid to 0.1118
+  (README), at no training cost.
   - **Trigger:** about 10k co-saved pairs from real users, enough to train with an
     in-batch contrastive loss and still hold out an eval split.
   - **Path:** the CiteULike eval and the CI gate decide whether a tuned model ships. A

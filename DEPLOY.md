@@ -1,104 +1,122 @@
 # Setup and deployment
 
-You'll run xoult locally with Docker first, then put it online on free tiers. Budget about
-60–90 minutes the first time. None of these services needs a credit card.
+This guide goes from an empty machine to xoult running online. You run everything
+locally first, then deploy to free tiers. None of these services needs a credit card.
+Budget 1.5–2 hours the first time.
 
 | Piece | Service | What runs there |
 | --- | --- | --- |
-| Database (Postgres + pgvector) | Supabase | Papers, users, events, embeddings |
-| API + web page | Render (Docker) | `uvicorn xoult.api:app`, built from `render.yaml` |
-| Daily paper ingest | GitHub Actions | `ingest.yml`, weekdays 07:00 UTC |
+| Database (Postgres + pgvector) | Supabase, Mumbai (`ap-south-1`) | Papers, users, events, embeddings |
+| API + web page | Render (Docker), Singapore: the nearest Render region to Mumbai | `uvicorn xoult.api:app`, from `render.yaml` |
+| Paper ingest | GitHub Actions | `ingest.yml`, weekdays 07:00 and 14:00 UTC |
 | CI + ranking eval gate | GitHub Actions | `ci.yml` on every push and PR |
-| TLDR generation | Groq, Gemini as fallback | Called by LiteLLM during ingest |
+| TLDRs | Groq first, then Gemini, OpenRouter, Meta, xAI | Called during ingest only |
+| Sign-in (optional) | Google Identity Services | Verifies who someone is; nothing else |
 | LLM tracing (optional) | Langfuse | Every TLDR call: prompt, tokens, latency |
 | Error tracking (optional) | Sentry | API exceptions |
 
-The ingest and the API never talk to each other. Both only read and write the database,
-so either can fail or redeploy without affecting the other.
+The ingest and the API share nothing but the database, so either can fail or redeploy
+alone. How data is stored, the security model, and why there's no Kubernetes, Kafka,
+cache layer or separate vector database are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 Order of work:
 
-1. Run everything locally (Part 1)
-2. Create accounts and collect keys (Part 2)
-3. Create the Supabase database (Part 3)
-4. Push to GitHub, add secrets, run CI and the first ingest (Part 4)
-5. Deploy the API on Render (Part 5)
-6. Verify production end to end (Part 6)
+| Part | What | Time |
+| --- | --- | --- |
+| 0 | Install the tools | 15 min |
+| 1 | Run everything locally | 20 min |
+| 2 | Create accounts and collect keys | 20 min |
+| 3 | Google sign-in (optional) | 10 min |
+| 4 | Create the Supabase database | 10 min |
+| 5 | Push to GitHub, add secrets, run CI and the first ingest | 25 min |
+| 6 | Deploy on Render | 10 min |
+| 7 | Verify production | 10 min |
 
 ---
 
-## Part 1: Run it locally with Docker
+## Part 0: Install the tools
+
+| Tool | Why | Install (Windows) | Check |
+| --- | --- | --- | --- |
+| Git | Version control | [git-scm.com](https://git-scm.com/download/win) | `git --version` |
+| uv | Installs Python 3.12 and every dependency from `uv.lock` | `powershell -c "irm https://astral.sh/uv/install.ps1 \| iex"` | `uv --version` |
+| Docker Desktop | Local Postgres + pgvector; builds the production image | [docker.com](https://www.docker.com/products/docker-desktop/) | `docker --version` |
+| Ollama (optional) | Local LLM for TLDRs without API keys | [ollama.com](https://ollama.com), then `ollama pull qwen2.5:1.5b` | `ollama list` |
+
+You don't need to install Python yourself; uv fetches 3.12. Open a **new** terminal after
+installing, so the updated PATH is picked up.
+
+---
+
+## Part 1: Run it locally
 
 Run every command from the repo folder in PowerShell. The Docker database listens on
 port **5433**, so it never collides with a PostgreSQL already installed on 5432.
 
-1. Start Docker Desktop and wait until it shows "Engine running". In a **new** terminal,
-   `docker --version` should print a version. If it says "not recognized", finish the
-   Docker Desktop installer (it may ask you to restart Windows) and open a fresh terminal.
-
-2. Install dependencies (API, ingest extras, dev and eval tools):
+1. **Get the code and dependencies**
 
    ```powershell
+   git clone https://github.com/<your-username>/xoult.git   # skip if you already have it
+   cd xoult
    uv sync --all-extras
    ```
 
-3. Create your env file:
+2. **Create your env file**
 
    ```powershell
    Copy-Item .env.example .env
    ```
 
-   Its `DATABASE_URL` already points at the Docker database. Until you have Groq/Gemini
-   keys (Part 2), add these lines so TLDRs come from the local Ollama model
-   (`ollama pull qwen2.5:1.5b` once):
+   `DATABASE_URL` already points at the Docker database. Fill in API keys after Part 2.
+   Until then, uncomment the two Ollama lines (`LLM_MODELS`, `LLM_RPM`) to write TLDRs
+   with the local model.
 
-   ```
-   LLM_MODELS=["ollama/qwen2.5:1.5b"]
-   LLM_RPM=600
-   ```
+   Variable names must be exactly as in `.env.example`: uppercase, underscores, no spaces.
+   Windows forgives lowercase, but GitHub Actions and Render run Linux and won't.
 
-4. Start the database and check it is healthy:
+3. **Start the database**
 
    ```powershell
    docker compose up -d db
-   docker compose ps
+   docker compose ps          # STATUS should read "healthy" within ~10 s
+   uv run python -m xoult.db  # creates the tables; prints "schema ok: events, papers, users"
    ```
 
-   `STATUS` should read `healthy` within about 10 seconds.
-
-5. Create the tables:
+4. **Fetch today's papers**
 
    ```powershell
-   uv run python -m xoult.db
+   uv run python -m xoult.ingest --tldrs 50
    ```
 
-   Expected: `schema ok: events, papers, users`
+   Expected: `feed had ~1900 new papers`, several `embedded …` lines, `wrote …/50 tldrs`,
+   then a `pruned …` line. arXiv announces nothing on Saturday and Sunday, so the feed is
+   empty on weekends. Running it twice is safe: every step skips work already done.
 
-6. Fetch today's papers, embed them, and write 20 TLDRs:
+5. **Start the app**
 
    ```powershell
-   uv run python -m xoult.ingest --tldrs 20
+   uv run uvicorn xoult.api:app --port 8000
    ```
 
-   Expected: `feed had ~1100 new papers`, a few `embedded ...` lines, then
-   `wrote 20/20 tldrs` (a few may be rejected for length). arXiv announces nothing on
-   Saturday and Sunday, so the feed is empty on weekends.
+   Open **http://localhost:8000**. Use `localhost`, not `127.0.0.1`, or Google sign-in
+   fails with `origin_mismatch`. Stop the server with **Ctrl+C** in its terminal. On
+   Windows, closing the window can leave a server process holding the port (see
+   Troubleshooting).
 
-7. Start the API and use the app:
+6. **Try every feature**
 
-   ```powershell
-   uv run uvicorn xoult.api:app --reload
-   ```
+   - Pick categories, then **Start reading**. The welcome page shows each category's
+     daily volume.
+   - Work through the list: **Save** / **Not for me**, or the keys `j` `k` (move), `s`
+     (save), `x` (not for me), `o` (open), `a` (abstract), `u` (undo).
+   - **Re-rank with what you've saved.** Recommendations now say "Because you saved …".
+   - **Saved:** BibTeX and Remove. **Stats:** save rate per ranker version.
+   - **Settings:** change categories, switch to the **Wide** layout (two columns on
+     screens 1080 px and wider), sign in (after Part 3), download or delete your data.
+   - Discovery files: http://localhost:8000/robots.txt, /sitemap.xml, /llms.txt
+   - API docs: http://localhost:8000/docs
 
-   - http://127.0.0.1:8000: pick categories, then work through the list. **Save** and
-     **Not for me** (or the keys `s` and `x`, with `j`/`k` to move and `u` to undo), then
-     **Re-rank with what you've saved**. Recommendations now say which saved paper they
-     follow from.
-   - **Saved** lists what you saved, with BibTeX and Remove. **Stats** shows save rate
-     per ranking version.
-   - http://127.0.0.1:8000/docs: auto-generated API docs
-
-8. Run the same checks CI runs. The API test truncates tables, so it gets its own
+7. **Run the checks CI runs.** The API tests truncate tables, so they get their own
    database:
 
    ```powershell
@@ -110,145 +128,178 @@ port **5433**, so it never collides with a PostgreSQL already installed on 5432.
    uv run python -m evals.rank_eval --check
    ```
 
-   Without `TEST_DATABASE_URL` the API test is skipped and the rest still run. The eval
-   reuses the embeddings cached in `data/`, so it takes about a minute; on a fresh clone
-   the first run downloads CiteULike and embeds 17k papers (~8 minutes).
+   Without `TEST_DATABASE_URL` the API tests are skipped and the rest still run. The
+   first eval run downloads CiteULike and embeds 17k papers (~8 minutes); later runs use
+   the cache in `data/` and take about a minute.
 
-9. Build and run the exact image Render will run:
+8. **Run the production image locally.** This mirrors what Render runs, including the
+   production-only checks:
 
-    ```powershell
-    docker build -t xoult .
-    docker run --rm -p 8001:8000 -e DATABASE_URL=postgresql://xoult:xoult@host.docker.internal:5433/xoult xoult
-    ```
+   ```powershell
+   docker build -t xoult .
+   $key = uv run python -c "import secrets; print(secrets.token_urlsafe(32))"
+   docker run --rm -p 8001:8000 `
+     -e DATABASE_URL=postgresql://xoult:xoult@host.docker.internal:5433/xoult `
+     -e COOKIE_SECURE=true -e SECRET_KEY=$key xoult
+   ```
 
-    http://127.0.0.1:8001/health should return `{"status":"ok"}`. Use
-    `host.docker.internal` because `localhost` inside a container means the container itself.
+   http://localhost:8001/health returns `{"status":"ok"}`. `host.docker.internal` is how
+   a container reaches your machine; inside it, `localhost` means the container itself.
+   (`COOKIE_SECURE=true` makes browsers drop the cookie over plain http, so use this run
+   only to check health and headers, not to click around.)
 
-`docker compose down` stops the database and keeps the data in the `pgdata` volume.
-`docker compose down -v` deletes the data too.
+`docker compose down` stops the database and keeps its data. `docker compose down -v`
+deletes the data too.
 
 ---
 
 ## Part 2: Accounts and keys
 
-Collect these first. Each fills one variable, used locally in `.env` and later as a
-GitHub secret.
+Each key goes in `.env` locally and later in GitHub and Render secrets.
 
-| Key | Where to get it | Variable |
-| --- | --- | --- |
-| Groq (primary LLM) | [console.groq.com](https://console.groq.com) → API Keys → Create API Key | `GROQ_API_KEY` |
-| Gemini (fallback) | [aistudio.google.com](https://aistudio.google.com) → Get API key → Create API key | `GEMINI_API_KEY` |
-| OpenRouter (fallback, optional) | [openrouter.ai](https://openrouter.ai) → Keys. Without credit only `:free` models work, which is all xoult uses | `OPENROUTER_API_KEY` |
-| Meta Llama API (fallback, optional) | [llama.developer.meta.com](https://llama.developer.meta.com) → API keys | `LLAMA_API_KEY` |
-| xAI (paid last resort, optional) | [console.x.ai](https://console.x.ai) → API keys; needs prepaid credits | `XAI_API_KEY` |
-| Session secret | Generate: `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"` | `SECRET_KEY` |
-| Google sign-in (optional) | See "Google sign-in" below | `GOOGLE_CLIENT_ID` |
-| Langfuse (optional) | [cloud.langfuse.com](https://cloud.langfuse.com) → new project → Settings → API Keys → Create | `LANGFUSE_PUBLIC_KEY` (`pk-lf-…`), `LANGFUSE_SECRET_KEY` (`sk-lf-…`), `LANGFUSE_HOST` |
-| Sentry (optional) | [sentry.io](https://sentry.io) → Create Project → platform FastAPI → copy the DSN | `SENTRY_DSN` |
-| Database URL | Part 3 | `DATABASE_URL` |
+| Key | Where | Variable | Needed? |
+| --- | --- | --- | --- |
+| Groq | [console.groq.com](https://console.groq.com) → API Keys | `GROQ_API_KEY` | Yes, the main LLM |
+| Gemini | [aistudio.google.com](https://aistudio.google.com) → Get API key | `GEMINI_API_KEY` | Recommended: takes over when Groq is rate limited |
+| OpenRouter | [openrouter.ai](https://openrouter.ai) → Keys | `OPENROUTER_API_KEY` | Optional. Without credit only `:free` models work, and xoult uses only those |
+| Meta Llama API | [llama.developer.meta.com](https://llama.developer.meta.com) → API keys | `LLAMA_API_KEY` | Optional |
+| xAI | [console.x.ai](https://console.x.ai) → API keys | `XAI_API_KEY` | Optional, paid last resort; needs prepaid credits |
+| Session secret | `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"` | `SECRET_KEY` | Production only; Render generates it for you |
+| Google client ID | Part 3 | `GOOGLE_CLIENT_ID` | Optional: sign-in is hidden without it |
+| Langfuse | [cloud.langfuse.com](https://cloud.langfuse.com) → project → Settings → API Keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
+| Sentry | [sentry.io](https://sentry.io) → Create Project → FastAPI → DSN | `SENTRY_DSN` | Optional |
+| Database URL | Part 4 | `DATABASE_URL` | Yes |
 
-Variable names must be exactly as written, uppercase with underscores: Windows forgives
-lowercase, but GitHub Actions and Render run Linux and won't find the key.
+**How the LLM keys are used.** `llm_models` in `src/xoult/config.py` is tried top to
+bottom: Groq, Gemini Flash-Lite, OpenRouter (free Nemotron), Gemini Flash, OpenRouter
+(free Gemma), Meta Llama, xAI. A model that's rate limited is skipped for 60 s; one with a
+bad key, no credits or an outage, for 10 minutes. You can run with Groq alone; every
+extra key adds headroom.
 
-Notes:
+**Check the keys work** (one real call per model in the chain):
 
-- **LLM order.** `llm_models` in `src/xoult/config.py` is tried top to bottom: Groq,
-  Gemini Flash-Lite, OpenRouter (free Nemotron), Gemini Flash, OpenRouter (free Gemma),
-  Meta Llama, xAI. Any provider without a key, out of quota or failing is skipped for a
-  while, so you can run with just Groq.
-  [ARCHITECTURE.md](ARCHITECTURE.md#llm-calls) explains the cooldowns.
-- **Check that your keys work.** One call per model, a few seconds:
+```powershell
+uv run python -m xoult.ingest --tldrs 5
+```
 
-  ```powershell
-  uv run python -m xoult.ingest --tldrs 5
-  ```
+Expected: `wrote 5/5 tldrs`. A line like `xai/… failed with APIError; trying the next
+model` names a provider whose key is wrong or has no credits. The chain carries on
+without it.
 
-  Expected: `wrote 5/5 tldrs`. A line like `xai/... failed with APIError; trying the next
-  model` names a provider whose key is wrong or has no credits.
-- **Langfuse host** depends on the region you picked when creating the project (EU:
-  `https://cloud.langfuse.com`, US: `https://us.cloud.langfuse.com`). Use the URL shown
-  next to your keys. With keys set, `tldr-v1` traces appear under Tracing within a minute.
-
-### Google sign-in (optional)
-
-People can use xoult without an account. Sign-in keeps their saves across devices.
-Google's interface names shift a little over time; the steps are:
-
-1. [console.cloud.google.com](https://console.cloud.google.com) → create a project
-   named `xoult`.
-2. **APIs & Services → OAuth consent screen** (shown as "Google Auth Platform" in newer
-   consoles) → set the app name `xoult`, your support email, audience **External**.
-3. **Clients → Create client** → type **Web application**. Under **Authorized JavaScript
-   origins** add:
-   - `http://localhost:8000` and `http://localhost` (local)
-   - `https://<your-app>.onrender.com` (after Part 5)
-
-   No redirect URI is needed: the button returns a signed token to the page, and the
-   server verifies it. Copy the **Client ID** (ends in `.apps.googleusercontent.com`) into
-   `GOOGLE_CLIENT_ID`. The client secret is not used.
-4. **Audience → Publish app.** While in "Testing", only test users you list can sign in.
-   xoult asks only for the basic `openid email profile` scopes, which don't need Google's
-   verification review.
-5. Locally, open **http://localhost:8000**, not 127.0.0.1. Google matches the origin
-   exactly.
+**Langfuse host** matches the region you picked for the project (EU:
+`https://cloud.langfuse.com`, US: `https://us.cloud.langfuse.com`). With keys set,
+`tldr-v1` traces appear under Tracing within a minute of an ingest.
 
 ---
 
-## Part 3: Database on Supabase
+## Part 3: Google sign-in (optional)
 
-1. [supabase.com](https://supabase.com) → New project. Name it `xoult`, generate a
-   strong database password **and save it**, and pick the region closest to you
-   (South Asia: Mumbai).
+People can use xoult without an account; signing in keeps their saves across devices.
+xoult uses Google's **ID-token flow**: Google's button hands the page a signed token,
+and the server checks it. Nothing redirects, and the client secret is never used.
 
-2. Wait 1–2 minutes for the project to finish provisioning.
+1. [console.cloud.google.com](https://console.cloud.google.com) → create a project
+   named `xoult`.
+2. **APIs & Services → OAuth consent screen** ("Google Auth Platform" in newer consoles)
+   → app name `xoult`, your support email, audience **External**.
+3. **Clients → Create client** → type **Web application**:
 
-3. Click **Connect** (top bar) → **Session pooler** → copy the URI. It looks like:
+   | Field | Local testing | Add after deploying (Part 6) |
+   | --- | --- | --- |
+   | Authorized JavaScript origins | `http://localhost:8000` and `http://localhost` | `https://<your-app>.onrender.com` |
+   | Authorized redirect URIs | none | none |
+
+   Type origins exactly: scheme, host and port, with no trailing `/` and no path.
+4. Copy the **Client ID** (ends in `.apps.googleusercontent.com`) into
+   `GOOGLE_CLIENT_ID` in `.env`. You don't need the client secret; don't store it.
+5. **Audience → Publish app.** While in "Testing", only test users you add can sign in.
+   xoult requests only `openid email profile`, which needs no Google verification review.
+6. Restart the server (Ctrl+C, then start it again; `.env` is read at startup) and open
+   **http://localhost:8000**. The **Sign in with Google** button appears on the welcome
+   page and in Settings.
+
+Test it:
+1. Save a paper, then sign in. Settings shows "Signed in with Google as …" and the save
+   is still there.
+2. In a private window, save a different paper and sign in with the same account. Both
+   saves now appear: the two devices merged into one account.
+
+Origin changes in Google's console can take from 5 minutes to a few hours to apply.
+
+---
+
+## Part 4: Database on Supabase
+
+1. [supabase.com](https://supabase.com) → **New project** → name `xoult`, generate a
+   strong password **and save it**, region **South Asia (Mumbai)**, `ap-south-1`.
+   - **About regions.** The app runs on Render, which has no India region, so
+     `render.yaml` pins it to **Singapore**, the closest one. Every feed request makes
+     several database round trips. Mumbai–Singapore is a short hop; a US or Europe
+     region on either side would make each trip cross a continent.
+   - For the lowest latency, create the project in **Southeast Asia (Singapore)**
+     instead, next to Render. A project's region can't be changed after creation.
+
+2. Wait 1–2 minutes while it provisions.
+
+3. **Connect** (top bar) → **Session pooler** → copy the URI. For a Mumbai project it looks
+   like:
 
    ```
-   postgresql://postgres.<project-ref>:[YOUR-PASSWORD]@aws-0-<region>.pooler.supabase.com:5432/postgres
+   postgresql://postgres.<project-ref>:[YOUR-PASSWORD]@aws-0-ap-south-1.pooler.supabase.com:5432/postgres
    ```
 
-   Replace `[YOUR-PASSWORD]` with your password. If the password contains `@ : / ? #`,
-   URL-encode those characters (for example `@` → `%40`), or generate a password without
-   them. Use the **Session pooler**, not "Direct connection": the direct host is IPv6-only
-   on the free plan, and Render and GitHub runners can't reach it.
+   - Copy the host exactly as Supabase shows it. Projects in the same region sit on
+     different pooler clusters (`aws-0-…`, `aws-1-…`). The wrong one answers "tenant/user
+     not found".
+   - Replace `[YOUR-PASSWORD]`. If the password contains `@ : / ? #`, URL-encode them
+     (`@` → `%40`) or generate one without them.
+   - Use the **Session pooler**, not "Direct connection": the direct host
+     (`db.<project-ref>.supabase.co`) is IPv6-only on the free plan, and Render and
+     GitHub runners can't reach it.
+   - This URI is the **only** Supabase value xoult needs. The project URL, publishable
+     key, secret key and JWT/JWKS settings are for Supabase's own SDKs and Auth, which
+     xoult doesn't use. Leave them out
+     ([ARCHITECTURE.md](ARCHITECTURE.md#what-xoult-uses-from-supabase)).
+   - **Test it on your machine before pasting it anywhere else.** A wrong password used by
+     a server that retries trips Supabase's lockout (`ECIRCUITBREAKER`) for the whole
+     project:
 
-4. Create the tables from your machine:
+     ```powershell
+     $env:DATABASE_URL = "<the Supabase URI>"
+     uv run python -m xoult.db      # "schema ok: …" means the URI is right
+     Remove-Item Env:DATABASE_URL
+     ```
+
+4. Create the tables and load today's papers from your machine:
 
    ```powershell
    $env:DATABASE_URL = "<the Supabase URI>"
    uv run python -m xoult.db
+   uv run python -m xoult.ingest --tldrs 100
    Remove-Item Env:DATABASE_URL
    ```
 
-   Expected: `schema ok: events, papers, users`. `create extension vector` in the schema
-   enables pgvector; Supabase allows it.
+5. **Check Supabase's automatic REST API is locked.** Supabase serves every `public` table
+   over HTTP, and without Row Level Security anyone holding the project's public anon key
+   could read and write them. `db/schema.sql` turns RLS on with no policies, which shuts
+   that API out. xoult connects as the tables' owner, which RLS doesn't restrict. In
+   **Table Editor**, `papers`, `users` and `events` are listed with no "RLS disabled"
+   warning.
 
-5. **Lock down the auto-generated REST API.** Supabase serves every table in `public`
-   through its Data API, and tables without Row Level Security can be read and written by
-   anyone holding the project's public anon key. xoult never uses that API; it connects
-   as the `postgres` owner, which RLS doesn't restrict. Turn RLS on with no policies,
-   which blocks the Data API completely. In **SQL Editor**, run:
-
-   ```sql
-   alter table papers enable row level security;
-   alter table users  enable row level security;
-   alter table events enable row level security;
-   ```
-
-6. Check **Table Editor**: `papers`, `users` and `events` are listed, with no
-   "RLS disabled" warning.
+**Storage:** each paper takes about 4.5 KB. Ingest deletes papers older than 30 days
+that nobody saved or dismissed, so the database levels off around 190 MB of the free
+500 MB. Check it under **Database → Usage**.
 
 ---
 
-## Part 4: GitHub (code, secrets, CI, first ingest)
+## Part 5: GitHub (code, secrets, CI, first ingest)
 
-1. On github.com, create an **empty** repository named `xoult` (no README or license).
-   - **Public:** unlimited free Actions minutes, and recruiters can read it.
-   - **Private:** 2,000 free minutes a month. Enough, but the first eval run spends ~15.
+1. On github.com create an **empty** repository `xoult`: no README, license or
+   .gitignore.
+   - **Public:** unlimited free Actions minutes, and recruiters can read the code.
+   - **Private:** 2,000 free minutes a month, which is enough.
 
-2. Commit your work, then push it. The workflows only run on `main`, and your local branch
-   is `master`, so rename it:
+2. Push. The workflows run on `main`; if your local branch is `master`, rename it:
 
    ```powershell
    git branch -M main
@@ -256,97 +307,112 @@ Google's interface names shift a little over time; the steps are:
    git push -u origin main
    ```
 
-3. Add the secrets: repo → **Settings → Secrets and variables → Actions → New repository
-   secret**. Add each, names exactly as written:
+3. **Settings → Secrets and variables → Actions → New repository secret.** Add each,
+   named exactly:
 
-   | Secret | Required |
+   | Secret | Needed? |
    | --- | --- |
-   | `DATABASE_URL` | yes (Supabase session pooler URI) |
-   | `GROQ_API_KEY` | yes |
-   | `GEMINI_API_KEY` | recommended (fallback when Groq is rate limited) |
-   | `OPENROUTER_API_KEY` | optional (fallback) |
-   | `LLAMA_API_KEY` | optional (fallback) |
-   | `XAI_API_KEY` | optional (paid last resort) |
-   | `LANGFUSE_PUBLIC_KEY` | optional |
-   | `LANGFUSE_SECRET_KEY` | optional |
-   | `LANGFUSE_HOST` | optional |
+   | `DATABASE_URL` | Yes: the Supabase session pooler URI |
+   | `GROQ_API_KEY` | Yes |
+   | `GEMINI_API_KEY` | Recommended |
+   | `OPENROUTER_API_KEY`, `LLAMA_API_KEY`, `XAI_API_KEY` | Optional fallbacks |
+   | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
 
-4. Open the **Actions** tab. The push started **ci**, which runs three jobs:
-   - `test`: lint, format and unit tests (~2 min)
-   - `ranking-eval`: the NDCG gate. The first run embeds 17k papers (~8–15 min); later
-     runs restore them from cache and take ~2 min.
-   - `docker`: builds the Render image and checks the API imports in it
+   Ingest is the only workflow that uses these. CI needs no secrets: its tests use a
+   throwaway database and no LLM.
 
-   All three should go green. If the workflow fails on `uv sync --locked`, run `uv lock`
-   locally and commit `uv.lock`.
+4. **Actions** tab: the push started **ci**, with three jobs.
 
-5. Run the first ingest by hand: **Actions → ingest → Run workflow → Run workflow**. It
-   takes ~15 minutes (TLDR calls are paced at 25 a minute, capped at 300 a run). The
-   logs should show `schema ok`, `feed had N new papers`, `embedded … papers` and
-   `wrote K/300 tldrs`.
+   | Job | What it proves | Time |
+   | --- | --- | --- |
+   | `test` | Lint, format, unit tests, and the API tests against a real pgvector database | ~2 min |
+   | `ranking-eval` | NDCG@10 on CiteULike hasn't dropped more than 2% | first run ~10–15 min, then ~2 |
+   | `docker` | The production image builds and the API imports in it | ~2 min |
 
-6. Confirm the data in Supabase **SQL Editor**:
+   If a job fails on `uv sync --locked`, run `uv lock` locally and commit `uv.lock`.
 
-   ```sql
-   select count(*) as papers, count(embedding) as embedded, count(tldr) as with_tldr from papers;
-   ```
+5. **Actions → ingest → Run workflow.** About 15 minutes: TLDRs are paced at 25 a
+   minute, 300 a run. The log shows `schema ok`, `feed had N new papers`, `embedded …`,
+   `wrote K/300 tldrs`, and `pruned …`.
 
-From now on the ingest runs on its own every weekday at 07:00 UTC (12:30 IST), and again
-at 14:00 UTC to write TLDRs for papers people were shown that morning. Each run also
-deletes papers older than 30 days that nobody saved, which keeps the database far under
-Supabase's 500 MB. GitHub can start scheduled runs late by several minutes. That's normal.
+6. **Dependabot** (`.github/dependabot.yml`) now opens weekly PRs for Python packages and
+   monthly ones for Actions and the Docker base image. CI tests each one; merge when
+   green.
+
+From now on ingest runs on its own every weekday at 07:00 UTC (12:30 IST). A second run at
+14:00 UTC writes TLDRs for papers people were shown that morning. GitHub sometimes
+starts scheduled runs several minutes late; that's normal.
 
 ---
 
-## Part 5: Deploy the API on Render
+## Part 6: Deploy on Render
 
-1. [render.com](https://render.com) → sign up with GitHub and allow access to the
+1. [render.com](https://render.com) → sign up with GitHub and grant access to the
    `xoult` repo.
 
-2. **New → Blueprint** → pick the `xoult` repo. Render reads `render.yaml` and proposes
-   one free web service called `xoult`.
+2. **New → Blueprint** → pick `xoult`. Render reads `render.yaml`: one free Docker web
+   service, region Singapore (the nearest Render region to a Mumbai database), health
+   check on `/health`.
 
 3. Fill in the variables it asks for:
-   - `DATABASE_URL`: the same Supabase session pooler URI
-   - `GOOGLE_CLIENT_ID`: your client id, or leave it empty to hide sign-in
-   - `PUBLIC_URL`: the app's address, e.g. `https://xoult-abcd.onrender.com` (you can
-     fill it in after the first deploy shows the URL). Link previews, `robots.txt` and the
-     sitemap use it
-   - `SENTRY_DSN`: your DSN, or leave it empty
 
-   `SECRET_KEY` is generated by Render and `COOKIE_SECURE=true` is set by `render.yaml`.
-   **Never regenerate `SECRET_KEY`:** anonymous users exist only through cookies signed
-   with it, so a new key cuts them off from their saves.
+   | Variable | Value |
+   | --- | --- |
+   | `DATABASE_URL` | The Supabase session pooler URI |
+   | `GOOGLE_CLIENT_ID` | Your client ID, or empty to hide sign-in |
+   | `PUBLIC_URL` | The app's address, e.g. `https://xoult-abcd.onrender.com`; fill it in once the first deploy shows the URL |
+   | `SENTRY_DSN` | Your DSN, or empty |
 
-4. **Apply**. The first Docker build takes ~3–5 minutes. Under **Logs**, the deploy is
-   done when you see `Uvicorn running on http://0.0.0.0:10000` (Render sets `PORT`
-   itself) and the health check on `/health` passes.
+   `render.yaml` sets the rest:
+   - **`SECRET_KEY`** is generated once by Render. **Never regenerate it:** anonymous
+     users exist only through cookies signed with it, so a new key cuts them off from
+     their saves.
+   - **`COOKIE_SECURE=true`** turns on HTTPS-only cookies and HSTS. The app refuses to
+     start in this mode without a strong `SECRET_KEY`.
 
-5. Your app is at `https://xoult-<something>.onrender.com`. Every push to `main`
-   redeploys it automatically.
+4. **Apply.** The first build takes ~3–5 minutes. It's live when the log shows
+   `Uvicorn running on http://0.0.0.0:10000` and the health check passes.
 
-How the free plan behaves:
+5. Finish the wiring:
+   - Set `PUBLIC_URL` to the real address. Render redeploys on its own.
+   - Add `https://<your-app>.onrender.com` to the Google client's **Authorized JavaScript
+     origins** (Part 3, step 3).
 
-- The service **sleeps after 15 minutes without traffic**. The next request waits
-  ~30–60 seconds while it boots, and the page shows "The server may be waking up" in the
-  meantime. That's expected on the free plan.
-- 750 free instance hours a month covers one service running all month.
+Every push to `main` redeploys automatically.
+
+**The free plan sleeps.** After 15 minutes without traffic the service stops, and the
+next visit waits 30–60 s while it boots; the page says the server may be waking up.
+750 free hours a month is enough for one service running all month. If you want it
+always awake, a free uptime monitor (for example UptimeRobot) can request `/health`
+every 5 minutes. That's a judgement call about the free tier's intent, so it isn't set
+up by default.
+
+**Custom domain (optional).** Render → Settings → Custom Domains, then add that
+`https://` origin to Google's console and `PUBLIC_URL`.
 
 ---
 
-## Part 6: Verify production
+## Part 7: Verify production
 
 - [ ] **ci** is green on `main` (test, ranking-eval, docker)
-- [ ] The **ingest** run succeeded and the SQL count shows papers with embeddings and TLDRs
+- [ ] The **ingest** run succeeded; in Supabase:
+      `select count(*), count(embedding), count(tldr) from papers;` shows all three > 0
 - [ ] `https://<your-app>.onrender.com/health` returns `{"status":"ok"}`
-- [ ] The app loads, you can pick categories, and the feed shows today's papers with TLDRs
-- [ ] After saving ~5 papers and dismissing ~5, a reload shows a feed tilted toward what you saved
-- [ ] `/stats` shows impressions and a save rate for `v1-linear`
-- [ ] Langfuse → Tracing shows `tldr-v1` generations with tokens and latency
-- [ ] **Proof the eval gate works:** open a PR that changes `embedding_model` in
-      `config.py` to `BAAI/bge-small-en-v1.5`. The `ranking-eval` job should fail with
-      `ranking quality regressed` (0.0886 < floor 0.0985). Close the PR without merging.
-      Link it in your README as evidence.
+- [ ] The app loads, categories show daily counts, and the feed shows today's papers with TLDRs
+- [ ] After ~5 saves and ~5 "Not for me", re-ranking shows "Because you saved …"
+- [ ] Settings → Wide works on a laptop-sized window
+- [ ] **Sign in with Google** works, and saves survive signing in
+- [ ] Settings → **Download my data** downloads JSON. Try **Delete everything** on a
+      test account
+- [ ] `/robots.txt`, `/sitemap.xml` and `/llms.txt` show your `PUBLIC_URL`, not `localhost`
+- [ ] Pasting the link into WhatsApp or Slack shows the preview card
+- [ ] Browser dev tools → Network → `/feed` response has `cache-control: no-store`, and
+      the document has `content-security-policy` and `strict-transport-security`
+- [ ] Langfuse → Tracing shows `tldr-v1` generations (if configured)
+- [ ] **Proof the eval gate works:** open a PR that sets `LEXICAL_WEIGHT = 0.0` in
+      `src/xoult/rank.py`, which turns the hybrid back into v1's embeddings-only ranking.
+      `ranking-eval` should fail with `ranking quality regressed` (0.1005 < floor
+      0.1096). Close it without merging and link it in your README as evidence.
 
 ---
 
@@ -354,47 +420,58 @@ How the free plan behaves:
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `docker compose up`: port is already allocated | Something else already uses 5433 | Change the left side of `"5433:5432"` in `docker-compose.yml` and the port in `.env` to match |
-| `connection refused` from `xoult.db` locally | DB container not running, or wrong port in `.env` | `docker compose ps`; `DATABASE_URL` must use port 5433 |
-| Supabase: `password authentication failed` | Wrong password, or special characters not URL-encoded | Reset the DB password in Supabase settings, or encode it |
-| Supabase: `Network is unreachable` / IPv6 error | Used the direct-connection URI | Use the Session pooler URI (Part 3, step 3) |
-| Ingest: `arXiv returned 429, retrying` | arXiv rate limit | It retries with backoff on its own; if it gives up, re-run later |
-| Ingest: `feed had 0 new papers` | Weekend or holiday, or run before ~06:00 UTC | Normal; the next weekday run picks up |
-| TLDRs: `AuthenticationError` | Secret missing, misnamed, or empty | Check the secret names in Part 4, step 3 |
-| TLDRs: `wrote 0/300` with `RateLimitError` | Free LLM quota used up | Lower `tldrs_per_run` in `config.py`; Gemini fallback covers some |
-| TLDRs: `model not found` / decommissioned | Provider renamed or retired the model | Update `llm_models` in `config.py` (Part 2 notes) |
-| Render deploy fails the health check | `DATABASE_URL` missing or wrong | Render → Environment, fix it, Manual Deploy |
-| Page says "Couldn't reach the server" | Free instance waking up | Wait a minute and press Try again |
-| Render deploy crashes with `Set SECRET_KEY to 32+ random characters` | `SECRET_KEY` missing or short while `COOKIE_SECURE=true` | Let Render generate it (Blueprint), or set 32+ random characters |
-| Google button missing | `GOOGLE_CLIENT_ID` not set | Set it (Part 2, Google sign-in) |
-| Google popup: "origin not allowed" / `origin_mismatch` | Page origin not in the client's Authorized JavaScript origins | Add the exact origin; locally use `http://localhost:8000`, not 127.0.0.1 |
-| Only you can sign in with Google | Consent screen still in "Testing" | Audience → Publish app |
-| `429 Too Many Requests` while testing | Per-IP rate limit (5 sign-ups a minute) | Wait a minute; limits are in `RateLimit(...)` in `api.py` |
-| Everyone is logged out after a deploy | `SECRET_KEY` changed | Restore the old key; anonymous saves come back with it |
-| No traces in Langfuse | Keys missing, or host is the wrong region | Check `LANGFUSE_HOST` matches the project's region |
-| CI `ranking-eval` fails after your change | NDCG@10 dropped more than 2% | Fix it; if the change is a deliberate trade-off, see "Update the eval baseline" |
-| CI fails on `uv sync --locked` | `uv.lock` is stale | `uv lock`, commit `uv.lock` |
+| `docker` not recognized | Installer unfinished, or the terminal is older than the install | Finish Docker Desktop setup (it may restart Windows); open a new terminal |
+| `docker compose up`: port is already allocated | Something else uses 5433 | Change the left side of `"5433:5432"` in `docker-compose.yml` and the port in `.env` |
+| `connection refused` from `xoult.db` | Database container not running, or wrong port | `docker compose ps`; `DATABASE_URL` must use 5433 locally |
+| Server changes don't show; old behaviour persists | A previous server process still holds port 8000 (Windows keeps orphaned workers alive) | `Get-NetTCPConnection -LocalPort 8000 -State Listen` shows its PID; `Stop-Process -Id <pid> -Force`, then start again. Stop servers with Ctrl+C |
+| `localhost` is slow to answer from scripts | Windows tries IPv6 (`::1`) first; the server listens on IPv4 | Browsers fall back instantly; in scripts use `127.0.0.1` |
+| Supabase: `password authentication failed` | Wrong password, or special characters not URL-encoded | Reset the database password, or encode it |
+| Supabase: `Network is unreachable` / IPv6 | Used the direct-connection URI | Use the Session pooler URI (Part 4, step 3) |
+| Ingest: `arXiv returned 429, retrying` | arXiv rate limit | Retries with backoff on its own; if it gives up, run again later |
+| Ingest: `feed had 0 new papers` | Weekend, holiday, or before ~06:00 UTC | Normal; the next weekday run picks up |
+| Ingest: `<model> failed with …; trying the next model` | That provider is rate limited, out of credit, or its key is wrong | Expected now and then; if one provider always fails, check its key |
+| Ingest: `wrote 0/300 tldrs` | Every provider failed | Check the keys (Part 2); lower `tldrs_per_run` if quotas are tight |
+| Render deploy fails the health check | `DATABASE_URL` missing or wrong | Render → Environment, fix it, **Manual Deploy** |
+| Render crash: `Set SECRET_KEY to 32+ random characters` | `SECRET_KEY` missing or short while `COOKIE_SECURE=true` | Let the Blueprint generate it, or set 32+ random characters |
+| Feed takes ~1 s or more in production | App and database on different continents | Keep `region: singapore` in `render.yaml` for a Mumbai or Singapore database (Part 4, step 1) |
+| Supabase: `(ECIRCUITBREAKER) too many authentication failures` | Something kept connecting with a wrong password (usually Render or the ingest workflow) until Supabase blocked logins | Fix the password in `DATABASE_URL` everywhere (`.env`, GitHub secret, Render), suspend or fix whatever was retrying, then wait a few minutes for the block to lift. `python -m xoult.db` locally confirms the URI first |
+| Password "correct" but still `password authentication failed` | `[YOUR-PASSWORD]` replaced inside the brackets, or special characters not URL-encoded | The brackets are part of the placeholder: `…:MyPass123@aws-0…`, not `…:[MyPass123]@…`. Or reset to an alphanumeric password |
+| Supabase: `tenant/user postgres.<ref> not found` | Wrong pooler cluster in the host (`aws-0` vs `aws-1`) | Copy the host exactly from Supabase → Connect → Session pooler |
+| Page says "Couldn't reach the server" | Free instance waking up | Wait a minute, then **Try again** |
+| Google button missing | `GOOGLE_CLIENT_ID` unset, or the server wasn't restarted after setting it | Set it, restart, reload |
+| Google: `Error 400: origin_mismatch` | The address bar's origin isn't in Authorized JavaScript origins | Add it exactly (scheme, host, port, no `/`); locally open `http://localhost:8000`, not 127.0.0.1; wait a few minutes after saving |
+| Google: only you can sign in | Consent screen still in "Testing" | Audience → **Publish app** |
+| `429 Too Many Requests` while testing | Rate limits: 5 sign-ups a minute per IP, 300 an hour overall | Wait; limits are the `RateLimit(...)` lines in `api.py` |
+| Everyone logged out after a deploy | `SECRET_KEY` changed | Restore the old key; anonymous saves come back with it |
+| No traces in Langfuse | Keys missing, or the wrong region host | `LANGFUSE_HOST` must match the project's region |
+| CI `ranking-eval` fails | NDCG@10 dropped more than 2% | Fix it; for a deliberate trade-off, see "Update the eval baseline" |
+| CI fails on `uv sync --locked` | `uv.lock` is stale | `uv lock`, then commit `uv.lock` |
+| Supabase project paused | A week with no activity | Dashboard → **Restore**; the weekday ingest normally prevents this |
+| Scheduled ingest stopped running | GitHub disables schedules after 60 days without commits | Actions → ingest → **Enable workflow** |
 
 ---
 
 ## Day-to-day operations
 
-**Change the LLM.** Edit `llm_models` in `src/xoult/config.py`. Before and after, compare
-quality with a judge that is a *different* model from the one being judged (a model
-grading its own output is biased toward it):
+**Change the LLM.** Edit `llm_models` in `src/xoult/config.py`. Compare quality before
+and after with a judge that isn't the model being judged:
 
 ```powershell
 uv run python -m evals.summary_eval --n 100 --judge gemini/gemini-3.5-flash
 ```
 
+**Rotate an API key.** Create the new key, update it in `.env`, GitHub secrets, and
+Render (if it's used there), then revoke the old one. Never rotate `SECRET_KEY` this way
+(see Part 6).
+
 **Change the embedding model.**
 
 1. Add the candidate to `EXTRA_MODELS` in `evals/rank_eval.py` and run
    `uv run python -m evals.rank_eval --all`.
-2. If it wins, set it in `config.py` and run
-   `uv run python -m evals.rank_eval --update-baseline`. Commit `config.py` and
-   `evals/baseline.json` together.
-3. After merging, re-embed production once from your machine:
+2. If it wins, set it in `config.py`, run
+   `uv run python -m evals.rank_eval --update-baseline`, and commit `config.py` with
+   `evals/baseline.json`.
+3. After merging, re-embed production once:
 
    ```powershell
    $env:DATABASE_URL = "<the Supabase URI>"
@@ -402,30 +479,28 @@ uv run python -m evals.summary_eval --n 100 --judge gemini/gemini-3.5-flash
    Remove-Item Env:DATABASE_URL
    ```
 
-The model must output 384 dimensions, or `vector(384)` in `db/schema.sql` changes too.
+   The model must output 384 dimensions, or `vector(384)` in `db/schema.sql` changes too.
 
-**Update the eval baseline.** Only when a drop is a deliberate trade-off, or after an
-improvement: `uv run python -m evals.rank_eval --update-baseline`, then commit
-`evals/baseline.json` with a message that says why.
+**Update the eval baseline.** Only after an improvement or for a deliberate trade-off:
+`uv run python -m evals.rank_eval --update-baseline`, then commit `evals/baseline.json`
+with a message saying why.
 
-**Ship a new ranker** (for example the TF-IDF hybrid). Change the `RANKER` string in
-`src/xoult/rank.py` (for example `v2-hybrid`). `/stats` then reports the old and new
-versions separately, so you can compare live save rates.
+**Ship a new ranker** (for example the TF-IDF hybrid). Change `RANKER` in
+`src/xoult/rank.py` (for example `v2-hybrid`). `/stats` then shows old and new versions
+side by side.
 
-**Add arXiv categories.** Edit `arxiv_categories` in `config.py`. More categories mean
-more papers a day and more TLDR quota used.
+**Add arXiv categories.** Edit `arxiv_categories` in `config.py` (and `CATEGORY_NAMES`
+in `api.py` for its display name). More categories mean more papers and more TLDR quota.
 
-**Keeping the free tiers alive.**
+**Schema changes.** `db/schema.sql` is safe to re-run. New columns use
+`alter table … add column if not exists`, and ingest applies the schema before every
+run. For changes that aren't additive (renames, type changes), introduce a migration
+tool at that point.
 
-- Supabase pauses projects after about a week without activity. The weekday ingest keeps
-  it active; if it does pause, click **Restore** in the dashboard.
-- GitHub disables scheduled workflows after 60 days without commits to the repo. Re-enable
-  `ingest` from the Actions tab if that happens.
-- Free LLM quotas change. Check the Groq and Gemini consoles if TLDR counts drop.
-
-**Back up the database** (the Supabase free plan keeps no long-term backups). You already
-have the PostgreSQL 17 tools installed:
+**Back up the database.** The free plan keeps no long-term backups:
 
 ```powershell
 & 'C:\Program Files\PostgreSQL\17\bin\pg_dump.exe' "<the Supabase URI>" -Fc -f xoult.dump
 ```
+
+Restore with `pg_restore -d "<URI>" xoult.dump`.
