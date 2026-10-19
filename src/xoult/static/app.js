@@ -211,7 +211,17 @@ function keyHints() {
     k("o"), " open   ", k("a"), " abstract   ", k("u"), " undo");
 }
 
-async function renderToday() {
+// The ranked list from the last visit to Today, so switching tabs doesn't re-rank (and
+// re-log every impression). It is rebuilt on "Re-rank", after an hour in case a new
+// day's papers arrived, and when the account or its categories change.
+let todayCache = null;  // { key, at, nodes }
+const TODAY_TTL = 60 * 60 * 1000;
+
+async function renderToday({ fresh = false } = {}) {
+  const key = `${me.id} ${me.categories.join()}`;
+  if (!fresh && todayCache && todayCache.key === key && Date.now() - todayCache.at < TODAY_TTL) {
+    return view.replaceChildren(...todayCache.nodes);
+  }
   view.replaceChildren(el("p", { className: "status", textContent: "Ranking today's papers…" }));
   let feed;
   try { feed = await api("/feed?limit=20"); } catch (e) {
@@ -224,9 +234,10 @@ async function renderToday() {
     feed.items.length
       ? el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)))
       : el("p", { className: "status", textContent: "You've been through everything from the last week. New papers arrive each weekday." }),
-    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: () => { renderToday(); scrollTo(0, 0); } }) : null,
+    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: () => { renderToday({ fresh: true }); scrollTo(0, 0); } }) : null,
     keyHints(),
   );
+  todayCache = { key, at: Date.now(), nodes: [...view.childNodes] };
 }
 
 /* ---------- Saved ---------- */

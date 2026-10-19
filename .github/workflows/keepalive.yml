@@ -1,0 +1,17 @@
+name: keepalive
+
+# Render's free plan sleeps a service after 15 idle minutes, and the next visitor waits
+# 30+ seconds for it to wake. /health also touches the database, so Supabase never sees
+# the week of inactivity that pauses a free project. GitHub may run this a few minutes
+# late under load, which is why it fires every 10 minutes rather than every 14.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8  # room for a cold start plus curl's retries
+    steps:
+      - run: curl --fail --silent --show-error --retry 3 --retry-delay 20 --max-time 90 https://xoult.onrender.com/health
