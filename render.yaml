@@ -3,6 +3,9 @@ services:
     name: xoult
     runtime: docker
     plan: free
+    # As close to the Supabase project (Mumbai, ap-south-1) as Render goes: it has no
+    # India region. A feed request makes several database round trips, so distance adds up.
+    region: singapore
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL

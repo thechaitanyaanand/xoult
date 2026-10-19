@@ -93,6 +93,10 @@ def test_security_headers_and_cookie(browser):
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
     assert r.headers["x-content-type-options"] == "nosniff"
+    assert "cache-control" not in r.headers  # the public page may be cached
+    start(browser)
+    assert browser.get("/feed").headers["cache-control"] == "no-store"
+    assert browser.get("/me").headers["cache-control"] == "no-store"
     cookie = browser.post("/users", json={"categories": ["cs.IR"]}).headers["set-cookie"]
     assert "httponly" in cookie.lower() and "samesite=lax" in cookie.lower()
 
@@ -278,10 +282,14 @@ def test_prune_keeps_what_people_use(browser):
     assert old_impressions == 0
 
 
-def test_stats_counts_per_ranker(browser):
+def test_stats_counts_each_shown_paper_once(browser):
+    with get_pool().connection() as conn:
+        conn.execute("delete from events")
     start(browser)
-    browser.get("/feed", params={"limit": 5})
-    save(browser, paper(0))
+    shown = [p["id"] for p in browser.get("/feed", params={"limit": 5}).json()["items"]]
+    browser.get("/feed", params={"limit": 5})  # a reload shows the same papers again
+    save(browser, shown[0])
     [row] = browser.get("/stats").json()
-    assert row["ranker"] == "v1-linear"
-    assert row["impressions"] > 0 and row["save_rate"] > 0
+    assert row["ranker"] == "v2-hybrid"
+    assert row["impressions"] == 5  # not 10: the reload is not five more chances
+    assert row["save_rate"] == 0.2
