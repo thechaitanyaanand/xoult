@@ -244,6 +244,11 @@ def test_rate_limits(browser):
     blocked = browser.post("/users", json={"categories": ["cs.IR"]})
     assert blocked.status_code == 429
     assert blocked.headers["retry-after"] == "60"
+    # Limits follow the address Cloudflare saw, not a header the client can make up.
+    fake = {"x-forwarded-for": "203.0.113.9"}
+    assert browser.post("/users", json={"categories": ["cs.IR"]}, headers=fake).status_code == 429
+    other = {"cf-connecting-ip": "198.51.100.7"}
+    assert browser.post("/users", json={"categories": ["cs.IR"]}, headers=other).status_code == 201
 
 
 def test_global_signup_cap_stops_distributed_bots(api, browser, monkeypatch):

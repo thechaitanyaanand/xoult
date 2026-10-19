@@ -57,7 +57,11 @@ CSP = "; ".join(
 
 PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config")
 
-app = FastAPI(title="xoult")
+# The interactive API docs are for local development; production doesn't advertise its API.
+docs = (
+    {} if not settings.cookie_secure else {"docs_url": None, "redoc_url": None, "openapi_url": None}
+)
+app = FastAPI(title="xoult", **docs)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
@@ -86,6 +90,15 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+def client_ip(request: Request) -> str:
+    # Render sits behind Cloudflare, which sets CF-Connecting-IP to the address it saw.
+    # X-Forwarded-For (what request.client reflects) keeps whatever the client sent
+    # first, so keying on it would let anyone reset their limits by inventing a header.
+    return request.headers.get("cf-connecting-ip") or (
+        request.client.host if request.client else "unknown"
+    )
+
+
 class RateLimit:
     """At most `limit` requests per fixed window, per client IP or for everyone together.
 
@@ -100,7 +113,7 @@ class RateLimit:
         self.lock = threading.Lock()
 
     def __call__(self, request: Request) -> None:
-        key = (request.client.host if request.client else "unknown") if self.per_ip else "*"
+        key = client_ip(request) if self.per_ip else "*"
         with self.lock:
             window = int(time.time() // self.seconds)
             if window != self.window:
@@ -227,7 +240,7 @@ def _days(conn, category: str) -> list[date]:
     ]
 
 
-@app.get("/sitemap.xml", include_in_schema=False)
+@app.get("/sitemap.xml", include_in_schema=False, dependencies=[Depends(read_limit)])
 def sitemap(request: Request) -> Response:
     origin = _origin(request)
     urls = [f"<url><loc>{origin}/</loc><changefreq>daily</changefreq></url>"]
@@ -252,8 +265,8 @@ def sitemap(request: Request) -> Response:
     return Response(xml, media_type="application/xml")
 
 
-@app.get("/papers/{category}", include_in_schema=False)
-@app.get("/papers/{category}/{day}", include_in_schema=False)
+@app.get("/papers/{category}", include_in_schema=False, dependencies=[Depends(read_limit)])
+@app.get("/papers/{category}/{day}", include_in_schema=False, dependencies=[Depends(read_limit)])
 def papers_page(request: Request, category: str, day: date | None = None) -> HTMLResponse:
     """One category's papers for one day, as plain HTML that search engines can index.
 
@@ -370,7 +383,7 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/config")
+@app.get("/config", dependencies=[Depends(read_limit)])
 def config(request: Request) -> dict:
     """What the page needs on first load, before it knows who the visitor is."""
     with get_pool().connection() as conn:

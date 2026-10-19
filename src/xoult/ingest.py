@@ -98,8 +98,9 @@ def store_new_papers() -> int:
         papers = parse_feed(fetch_feed(client))
     with get_pool().connection() as conn, conn.cursor() as cur:
         cur.executemany(INSERT, [vars(p) for p in papers])
-    log.info("feed had %d new papers", len(papers))
-    return len(papers)
+        new = cur.rowcount  # summed over the batch; papers already stored count 0
+    log.info("feed had %d papers, %d new", len(papers), new)
+    return new
 
 
 def embed_missing(batch_size: int = 256) -> int:

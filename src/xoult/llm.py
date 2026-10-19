@@ -10,6 +10,7 @@ from xoult.config import settings
 log = logging.getLogger("xoult.llm")
 
 litellm.drop_params = True  # e.g. reasoning_effort is silently dropped for models without it
+litellm.suppress_debug_info = True  # its "Give Feedback / Get Help" banner on every failure
 if os.environ.get("LANGFUSE_PUBLIC_KEY"):
     litellm.callbacks = ["langfuse_otel"]
 
