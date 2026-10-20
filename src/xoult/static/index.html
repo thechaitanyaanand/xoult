@@ -26,10 +26,16 @@
  "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}}
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M7 17l6 6L25 9' fill='none' stroke='%232b4bd6' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500&family=STIX+Two+Text:ital,wght@0,400;0,600;1,400&display=swap">
+<link rel="preload" href="/static/fonts/stix-two-text.woff2" as="font" type="font/woff2" crossorigin>
 <style>
+  /* Served from here, not Google Fonts, so no visitor's address goes to a third party.
+     Latin-only variable fonts (OFL, licenses beside them); other scripts fall back. */
+  @font-face { font-family: "STIX Two Text"; font-weight: 400 700; font-display: swap;
+               src: url(/static/fonts/stix-two-text.woff2) format("woff2"); }
+  @font-face { font-family: "STIX Two Text"; font-style: italic; font-weight: 400 700; font-display: swap;
+               src: url(/static/fonts/stix-two-text-italic.woff2) format("woff2"); }
+  @font-face { font-family: "IBM Plex Sans"; font-weight: 100 700; font-display: swap;
+               src: url(/static/fonts/ibm-plex-sans.woff2) format("woff2"); }
   :root {
     --paper: #f7f8fa;
     --ink: #1b2030;
@@ -223,6 +229,7 @@
     <a href="/papers/cs.CL">cs.CL</a> · <a href="/papers/cs.IR">cs.IR</a> ·
     <a href="/papers/cs.LG">cs.LG</a> · <a href="/papers/cs.AI">cs.AI</a> ·
     <a href="/papers/cs.CV">cs.CV</a> · <a href="/papers/stat.ML">stat.ML</a>
+    · <a href="/privacy">Privacy</a>
   </footer>
 </main>
 <script src="/static/app.js" defer></script>

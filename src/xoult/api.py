@@ -39,13 +39,13 @@ CATEGORY_NAMES = {
     "stat.ML": "Machine Learning (Statistics)",
 }
 
-# Google's sign-in button is the only third-party script; fonts are the only other origin.
+# Google's sign-in button is the only third-party script, and the only other origin.
 CSP = "; ".join(
     [
         "default-src 'self'",
         "script-src 'self' https://accounts.google.com/gsi/client",
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style",
-        "font-src https://fonts.gstatic.com",
+        "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style",
+        "font-src 'self'",
         "frame-src https://accounts.google.com/gsi/",
         "connect-src 'self' https://accounts.google.com/gsi/",
         "img-src 'self' data:",
@@ -255,7 +255,7 @@ def sitemap(request: Request) -> Response:
             urls += [
                 f"<url><loc>{origin}/papers/{c}/{d}</loc><lastmod>{d}</lastmod></url>" for d in days
             ]
-    urls.append(f"<url><loc>{origin}/llms.txt</loc></url>")
+    urls += [f"<url><loc>{origin}/privacy</loc></url>", f"<url><loc>{origin}/llms.txt</loc></url>"]
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
@@ -320,16 +320,33 @@ def papers_page(request: Request, category: str, day: date | None = None) -> HTM
         f"<nav>Earlier days: {archive or 'none yet'}</nav>"
         f"<nav>Other categories: {others}</nav>"
     )
+    path = f"/papers/{category}" + (f"/{day}" if day else "")
+    return _page(origin, path, title, description, body)  # body escaped piece by piece above
+
+
+def _page(origin: str, path: str, title: str, description: str, body: str) -> HTMLResponse:
+    """A plain server-rendered page in the papers.html shell. `body` must be safe HTML."""
     page = (STATIC / "papers.html").read_text(encoding="utf-8")
     for key, value in {
         "title": escape(title),
         "description": escape(description),
-        "canonical": f"{origin}/papers/{category}" + (f"/{day}" if day else ""),
+        "canonical": origin + path,
         "origin": origin,
-        "body": body,  # already escaped piece by piece above
+        "body": body,
     }.items():
         page = page.replace("{{" + key + "}}", value)
     return HTMLResponse(page, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/privacy", include_in_schema=False)
+def privacy(request: Request) -> HTMLResponse:
+    return _page(
+        _origin(request),
+        "/privacy",
+        "Privacy | xoult",
+        "What xoult stores about readers, why, how long, and how to download or delete it.",
+        (STATIC / "privacy.html").read_text(encoding="utf-8"),
+    )
 
 
 @app.get("/googlebf62e30f7f3ae670.html", include_in_schema=False)

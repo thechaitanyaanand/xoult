@@ -23,7 +23,14 @@ The API image carries no ML libraries; embedding and LLM calls happen only in in
 | `papers` | arXiv metadata, embedding, TLDR | 30 days, unless someone saved or dismissed it |
 
 Not stored: names, IP addresses, user agents, passwords, Google tokens. Sentry is
-initialised with `send_default_pii=False`.
+initialised with `send_default_pii=False`. IP addresses stay out of logs too: uvicorn
+runs with `--no-access-log`. Rate limiting reads them in memory only. Fonts are served
+from `/static/fonts` rather than Google Fonts, so page loads send nothing to a third
+party.
+
+The reader-facing version of this is `/privacy` (`static/privacy.html`). It names the
+processors (Supabase, Render behind Cloudflare, Google sign-in, Sentry) and the
+retention above, so it must change whenever they do.
 
 People control their own data from Settings: change categories, download everything
 (`GET /me/export`, JSON), or delete the account (`DELETE /me`; events go with it by

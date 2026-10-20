@@ -378,7 +378,8 @@ function renderSettings() {
 
   const data = el("section", {},
     el("h2", { textContent: "Your data" }),
-    el("p", { textContent: "xoult stores the categories you pick and which papers you were shown, opened, saved or hid. If you sign in, it also stores your Google account id and email. There are no ads or tracking scripts." }),
+    el("p", {}, "xoult stores the categories you pick and which papers you were shown, opened, saved or hid. That is used to rank your feed and, as totals across readers, to improve the ranking. If you sign in, it also stores your Google account id and email. There are no ads or tracking scripts. ",
+      el("a", { href: "/privacy", textContent: "Privacy details" })),
     el("div", { className: "row" },
       el("a", { className: "btn", href: "/me/export", download: "xoult-data.json", textContent: "Download my data" }),
       el("button", { className: "btn danger", textContent: "Delete everything", onclick: async () => {

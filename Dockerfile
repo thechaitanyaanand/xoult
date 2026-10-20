@@ -25,4 +25,6 @@ COPY --from=build --chown=app /app /app
 ENV PATH="/app/.venv/bin:$PATH"
 USER app
 
-CMD ["sh", "-c", "uvicorn xoult.api:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*'"]
+# No access log: it would write every visitor's IP address into Render's logs, and the
+# privacy page says IPs aren't kept. Errors are still logged, without addresses.
+CMD ["sh", "-c", "uvicorn xoult.api:app --host 0.0.0.0 --port ${PORT:-8000} --proxy-headers --forwarded-allow-ips='*' --no-access-log"]

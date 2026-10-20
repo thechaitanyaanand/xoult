@@ -101,7 +101,7 @@ def test_security_headers_and_cookie(browser):
     assert "httponly" in cookie.lower() and "samesite=lax" in cookie.lower()
 
 
-def test_discovery_files(browser, monkeypatch):
+def test_discovery_files(api, browser, monkeypatch):
     page = browser.get("/").text
     assert 'property="og:image" content="http://testserver/static/og.png"' in page
     assert "<noscript>" in page and "{{origin}}" not in page
@@ -112,6 +112,12 @@ def test_discovery_files(browser, monkeypatch):
     sitemap = browser.get("/sitemap.xml").text
     assert "<loc>http://testserver/</loc>" in sitemap
     assert "<loc>http://testserver/papers/cs.IR</loc>" in sitemap
+    assert "<loc>http://testserver/privacy</loc>" in sitemap
+    privacy = browser.get("/privacy").text
+    assert "<h1>Privacy</h1>" in privacy and "{{" not in privacy
+    assert 'href="/privacy"' in page  # linked from the landing page
+    assert "fonts.googleapis.com" not in page and "fonts.g" not in api.CSP
+    assert browser.get("/static/fonts/stix-two-text.woff2").status_code == 200
 
     # The daily lists are plain HTML: every paper in the category, none from others.
     latest = browser.get("/papers/cs.IR")
