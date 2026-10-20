@@ -103,7 +103,7 @@ def test_security_headers_and_cookie(browser):
 
 def test_discovery_files(api, browser, monkeypatch):
     page = browser.get("/").text
-    assert 'property="og:image" content="http://testserver/static/og.png"' in page
+    assert 'property="og:image" content="http://testserver/static/og.png?v=2"' in page
     assert "<noscript>" in page and "{{origin}}" not in page
     assert browser.get("/static/og.png").headers["content-type"] == "image/png"
 
