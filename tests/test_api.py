@@ -118,9 +118,13 @@ def test_discovery_files(api, browser, monkeypatch):
     assert 'href="/privacy"' in page  # linked from the landing page
     assert "fonts.googleapis.com" not in page and "fonts.g" not in api.CSP
     assert browser.get("/static/fonts/stix-two-text.woff2").status_code == 200
+    assert "Thank you to arXiv" in page and "Thank you to arXiv" in privacy
 
     # The daily lists are plain HTML: every paper in the category, none from others.
+    with get_pool().connection() as conn:
+        conn.execute("update papers set tldr = 'A TLDR.' where id = %s", (paper(0),))
     latest = browser.get("/papers/cs.IR")
+    assert latest.text.count("AI summary") == 1  # only on the LLM-written summary
     assert latest.status_code == 200 and "public" in latest.headers["cache-control"]
     assert "Retrieval paper 0" in latest.text and "Vision paper 1" not in latest.text
     assert 'rel="canonical" href="http://testserver/papers/cs.IR"' in latest.text

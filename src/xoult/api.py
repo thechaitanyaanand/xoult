@@ -265,6 +265,10 @@ def sitemap(request: Request) -> Response:
     return Response(xml, media_type="application/xml")
 
 
+# TLDRs are written by an LLM from the abstract and can be wrong; readers should know.
+AI_LABEL = '<span class="ai">AI summary</span>'
+
+
 @app.get("/papers/{category}", include_in_schema=False, dependencies=[Depends(read_limit)])
 @app.get("/papers/{category}/{day}", include_in_schema=False, dependencies=[Depends(read_limit)])
 def papers_page(request: Request, category: str, day: date | None = None) -> HTMLResponse:
@@ -304,7 +308,7 @@ def papers_page(request: Request, category: str, day: date | None = None) -> HTM
         items.append(
             f'<li><h2><a href="https://arxiv.org/abs/{escape(pid)}">{escape(ptitle)}</a></h2>'
             f'<p class="meta">{escape(byline)} · arXiv:{escape(pid)}</p>'
-            f"<p>{escape(summary)}</p></li>"
+            f"<p>{AI_LABEL if tldr else ''}{escape(summary)}</p></li>"
         )
     others = " ".join(
         f'<a href="/papers/{c}">{c}</a>' for c in settings.arxiv_categories if c != category

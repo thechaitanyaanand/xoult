@@ -123,7 +123,8 @@ function entry(p, rank, { saved = false } = {}) {
       el("h2", {}, title),
       el("p", { className: "byline", textContent: authors(p.authors) })),
     append(el("div", { className: "body" }),
-      el("p", { className: "summary", textContent: summary }),
+      // An LLM wrote the TLDR from the abstract; say so, since it can be wrong.
+      el("p", { className: "summary" }, p.tldr ? el("span", { className: "ai", textContent: "AI summary" }) : null, summary),
       p.because ? el("p", { className: "because" }, "Because you saved ", el("cite", { textContent: p.because })) : null,
       el("details", {}, el("summary", { textContent: "Abstract" }), el("p", { textContent: p.abstract }))),
     actions,
