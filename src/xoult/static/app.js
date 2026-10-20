@@ -57,6 +57,14 @@ function setSavedCount(n) {
   savedCache = null;  // every change to the saved list comes through here
   if (me) me.saved = Math.max(0, n);
   $("#saved-count").textContent = me && me.saved ? `(${me.saved})` : "";
+  syncRerank();
+}
+
+// Today's list doesn't reshuffle as you save (things moving under the cursor is worse),
+// so offer a re-rank at the top only once it would change something.
+function syncRerank() {
+  const link = $(".rerank");
+  if (link && todayCache) link.hidden = !todayCache.pending && me.saved === todayCache.saved;
 }
 
 function authors(list) {
@@ -201,7 +209,7 @@ function dateline(feed) {
   if (!feed.latest_date) return "No papers yet. The first batch arrives with the next weekday ingest.";
   const day = new Date(feed.latest_date).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
   const ranked = feed.items.some((i) => i.because) ? "Ranked by what you've saved."
-    : me.saved ? "Papers you just added take a few minutes to start ranking this list. Re-rank below in a bit."
+    : me.saved ? "Papers you just added take a few minutes to start ranking this list."
     : "Ranked by your categories until you save a few.";
   return `${feed.latest_count.toLocaleString()} new papers announced ${day}. ${ranked}`;
 }
@@ -222,7 +230,8 @@ const TODAY_TTL = 60 * 60 * 1000;
 async function renderToday({ fresh = false } = {}) {
   const key = `${me.id} ${me.categories.join()}`;
   if (!fresh && todayCache && todayCache.key === key && Date.now() - todayCache.at < TODAY_TTL) {
-    return view.replaceChildren(...todayCache.nodes);
+    view.replaceChildren(...todayCache.nodes);
+    return syncRerank();
   }
   view.replaceChildren(el("p", { className: "status", textContent: "Ranking today's papers…" }));
   let feed;
@@ -231,17 +240,22 @@ async function renderToday({ fresh = false } = {}) {
     return;
   }
   lastAction = null;
+  const rerank = () => { renderToday({ fresh: true }); scrollTo(0, 0); };
   view.replaceChildren();  // then append, which skips the null parts; replaceChildren prints "null"
   append(view,
-    el("p", { className: "dateline", textContent: dateline(feed) }),
+    el("p", { className: "dateline" }, dateline(feed), " ",
+      el("button", { className: "link rerank", textContent: "Re-rank now", hidden: true, onclick: rerank })),
     addPaper(),
     feed.items.length
       ? el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)))
       : el("p", { className: "status", textContent: "You've been through everything from the last week. New papers arrive each weekday." }),
-    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: () => { renderToday({ fresh: true }); scrollTo(0, 0); } }) : null,
+    feed.items.length ? el("button", { className: "btn more", textContent: "Re-rank with what you've saved", onclick: rerank }) : null,
     keyHints(),
   );
-  todayCache = { key, at: Date.now(), nodes: [...view.childNodes] };
+  // `saved` is what this ranking knew about; `pending` means saves it couldn't use yet.
+  const pending = Boolean(me.saved) && !feed.items.some((i) => i.because);
+  todayCache = { key, at: Date.now(), nodes: [...view.childNodes], saved: me.saved, pending };
+  syncRerank();
 }
 
 /* ---------- Saved ---------- */
