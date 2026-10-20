@@ -200,8 +200,8 @@ async function undo(node, p, kind) {
 function dateline(feed) {
   if (!feed.latest_date) return "No papers yet. The first batch arrives with the next weekday ingest.";
   const day = new Date(feed.latest_date).toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
-  const ranked = feed.items.some((i) => i.because)
-    ? "Ranked by what you've saved."
+  const ranked = feed.items.some((i) => i.because) ? "Ranked by what you've saved."
+    : me.saved ? "Papers you just added take a few minutes to start ranking this list. Re-rank below in a bit."
     : "Ranked by your categories until you save a few.";
   return `${feed.latest_count.toLocaleString()} new papers announced ${day}. ${ranked}`;
 }
@@ -210,7 +210,7 @@ function keyHints() {
   const k = (key) => el("kbd", { textContent: key });
   return el("p", { className: "hint" },
     k("j"), " ", k("k"), " move   ", k("s"), " save   ", k("x"), " not for me   ",
-    k("o"), " open   ", k("a"), " abstract   ", k("u"), " undo");
+    k("o"), " open   ", k("a"), " abstract   ", k("u"), " undo   ", k("/"), " add a paper");
 }
 
 // The ranked list from the last visit to Today, so switching tabs doesn't re-rank (and
@@ -234,6 +234,7 @@ async function renderToday({ fresh = false } = {}) {
   view.replaceChildren();  // then append, which skips the null parts; replaceChildren prints "null"
   append(view,
     el("p", { className: "dateline", textContent: dateline(feed) }),
+    addPaper(),
     feed.items.length
       ? el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)))
       : el("p", { className: "status", textContent: "You've been through everything from the last week. New papers arrive each weekday." }),
@@ -247,7 +248,7 @@ async function renderToday({ fresh = false } = {}) {
 
 const savedLine = (n) => (n
   ? `${n} saved, most recent first. Each one shapes your ranking.`
-  : "Nothing saved yet. Save papers from Today and they collect here.");
+  : "Nothing saved yet. Save papers from Today, or add ones you're already reading below.");
 
 // Like Today's: switching tabs shouldn't refetch. Saves elsewhere (another device) show
 // within the TTL; saves here clear it through setSavedCount.
@@ -271,17 +272,61 @@ async function renderSaved() {
         el("a", { href: "#settings", textContent: "Sign in" }), " to keep them on every device.")
     : null;
   const list = el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true })));
+  const filter = papers.length >= 10 ? el("input", {
+    type: "search", className: "filter", placeholder: `Filter your ${papers.length} saved papers`,
+    ariaLabel: "Filter your saved papers",
+    oninput: () => {
+      const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+      for (const li of list.children) {
+        const text = li.textContent.toLowerCase();
+        li.hidden = !words.every((w) => text.includes(w));
+      }
+    },
+  }) : null;
+  const copyAll = papers.length ? el("p", { className: "tools" }, filter, el("button", {
+    className: "link", textContent: `Copy BibTeX for all ${papers.length}`,
+    onclick: async () => {
+      let message = "Copied. Paste it into your .bib file.";
+      try { await navigator.clipboard.writeText(papers.map(bibtex).join("\n\n")); }
+      catch { message = "Couldn't copy here. Use the BibTeX link on each paper instead."; }
+      say(message);
+      $(".tools .note")?.remove();
+      $(".tools").append(el("span", { className: "note", textContent: `  ${message}` }));
+    },
+  })) : null;
   view.replaceChildren();
   append(view,
     el("p", { className: "dateline", textContent: savedLine(papers.length) }),
     nudge,
-    addPaper(list, new Set(papers.map((p) => p.id))),
+    addPaper(new Set(papers.map((p) => p.id)), (paper) => {
+      list.prepend(entry(paper, 0, { saved: true }));
+      $(".dateline").textContent = savedLine(me.saved);
+    }),
+    copyAll,
     list,
   );
 }
 
-// Any arXiv paper can go in the library, not only ones the feed showed.
-function addPaper(list, savedIds) {
+// arXiv's own format (@misc with eprint), built here so a whole library copies at once
+// without a request per paper. Key: first author's surname, year, first title word.
+function bibtex(p) {
+  const year = new Date(p.published_at).getFullYear();
+  const surname = (p.authors[0] || "anon").split(" ").pop().normalize("NFD").replace(/[^A-Za-z]/g, "").toLowerCase();
+  const word = (p.title.toLowerCase().match(/[a-z]{4,}/) || ["paper"])[0];
+  return `@misc{${surname}${year}${word},
+  title = {${p.title}},
+  author = {${p.authors.join(" and ")}},
+  year = {${year}},
+  eprint = {${p.id}},
+  archivePrefix = {arXiv},
+  primaryClass = {${p.categories[0]}},
+  url = {https://arxiv.org/abs/${p.id}}
+}`;
+}
+
+// Any arXiv paper can go in the library, not only ones the feed showed. On Today and
+// Saved; `savedIds` marks results already saved, `onSaved` updates the page around it.
+function addPaper(savedIds = new Set(), onSaved = () => {}) {
   const input = el("input", {
     id: "add-q", type: "search", required: true, minLength: 2, maxLength: 300, autocomplete: "off",
     placeholder: "arxiv.org/abs/1706.03762, or a title",
@@ -300,10 +345,11 @@ function addPaper(list, savedIds) {
       try {
         const paper = await api("/saved", { method: "POST", body: JSON.stringify({ paper_id: p.id }) });
         savedIds.add(paper.id);
-        list.prepend(entry(paper, 0, { saved: true }));
-        setSavedCount(me.saved + 1);
-        $(".dateline").textContent = savedLine(me.saved);
-        say("Saved");
+        if (paper.new) {
+          setSavedCount(me.saved + 1);
+          onSaved(paper);
+        }
+        say(paper.new ? "Saved" : "Already in your library");
         done();
       } catch (e) {
         button.disabled = false;
@@ -319,7 +365,7 @@ function addPaper(list, savedIds) {
   };
 
   const form = el("form", { className: "add", role: "search" },
-    el("label", { htmlFor: "add-q", textContent: "Add a paper from arXiv" }),
+    el("label", { htmlFor: "add-q", textContent: "Add any arXiv paper to your library" }),
     el("div", { className: "row" }, input, el("button", { className: "btn", textContent: "Find" })),
     status, found);
   form.onsubmit = async (e) => {
@@ -329,7 +375,7 @@ function addPaper(list, savedIds) {
     try {
       const papers = await api(`/arxiv?${new URLSearchParams({ q: input.value.trim() })}`);
       status.textContent = papers.length
-        ? "Saved papers shape your ranking from the next daily update."
+        ? "Papers you save here shape your ranking within a few minutes."
         : "Nothing on arXiv matches that. Try the link, or fewer words from the title.";
       found.replaceChildren(...papers.map(result));
     } catch (err) {
@@ -367,6 +413,23 @@ async function renderStats() {
 
 /* ---------- Categories (onboarding and settings share this) ---------- */
 
+// Second sign-up step, optional: a few papers the reader already knows give the ranker
+// something to work from before they have saved anything.
+function renderStarter() {
+  let added = 0;
+  const next = el("button", { className: "btn primary cta", textContent: "Skip, show today's papers", onclick: () => go("#today") });
+  view.replaceChildren(el("section", { className: "welcome" },
+    el("h1", { textContent: "Add papers you're already reading" }),
+    el("p", { textContent: "Paste arXiv links or search by title. Three to five is plenty: today's list is ranked around them, and you can always add more from the Saved tab." }),
+    addPaper(new Set(), () => {
+      added += 1;
+      next.textContent = `Show today's papers, ranked by ${added === 1 ? "this one" : `these ${added}`}`;
+    }),
+    next,
+  ));
+  $("#add-q").focus();
+}
+
 function categoryForm(selected, label, onSubmit) {
   const form = el("form", {},
     el("fieldset", {},
@@ -390,18 +453,19 @@ function categoryForm(selected, label, onSubmit) {
 function renderWelcome() {
   // Signed in with Google but never picked categories: finish setup instead of starting over.
   const finishing = me && !me.categories.length;
-  const form = categoryForm(config.categories.map((c) => c.id), "Start reading", async (picked) => {
+  const form = categoryForm([], "Continue", async (picked) => {
     if (finishing) await api("/me", { method: "PATCH", body: JSON.stringify({ categories: picked }) });
     else await api("/users", { method: "POST", body: JSON.stringify({ categories: picked }) });
     await loadMe();
-    go("#today");
+    renderStarter();
   });
+  $("button[type=submit]", form).classList.add("cta");
   const signIn = !finishing ? googleButton() : null;
   view.replaceChildren(el("section", { className: "welcome" },
     el("h1", { textContent: finishing ? "Pick what you follow" : "A short list from today's arXiv" }),
     el("p", { textContent: finishing
       ? "Choose the categories to rank. You can change them any time in Settings."
-      : "Over a thousand papers are announced each weekday. Save the ones worth reading and mark the rest as not for you; the list reorders around what you save. No account needed to start." }),
+      : "About 1,900 machine learning papers are announced each weekday. Save the ones worth reading, mark the rest as not for you, and the list reorders around what you save. You can also add papers you're already reading by pasting their arXiv links. No account needed." }),
     form,
     signIn ? el("div", { className: "alt" }, el("p", { className: "status", textContent: "Used xoult before? Sign in to get your saved papers back." }), signIn) : null,
   ));
@@ -500,6 +564,7 @@ function route() {
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
+  if (e.key === "/" && $("#add-q")) { e.preventDefault(); $("#add-q").focus(); return; }
   const items = [...document.querySelectorAll(".paper")];
   if (!items.length) return;
   const current = items.indexOf(document.activeElement.closest?.(".paper"));

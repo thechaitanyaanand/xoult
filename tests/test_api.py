@@ -341,12 +341,14 @@ def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
     assert [p["title"] for p in found.json()] == ["Attention Is All You Need"]
 
     r = browser.post("/saved", json={"paper_id": "https://arxiv.org/abs/1706.03762v7"})
-    assert r.status_code == 201 and r.json()["id"] == "1706.03762"
+    assert r.status_code == 201 and r.json()["id"] == "1706.03762" and r.json()["new"]
     assert [p["id"] for p in browser.get("/saved").json()] == ["1706.03762"]
     assert browser.get("/me").json()["saved"] == 1
     # A 2017 paper never shows up in the feed, and arXiv is asked only once for it.
     assert "1706.03762" not in {i["id"] for i in browser.get("/feed").json()["items"]}
-    assert browser.post("/saved", json={"paper_id": "1706.03762"}).status_code == 201
+    again = browser.post("/saved", json={"paper_id": "1706.03762"})
+    assert again.status_code == 201 and not again.json()["new"]  # no duplicate save
+    assert browser.get("/me").json()["saved"] == 1
     assert calls == ["attention is all you need", "1706.03762"]
     # Papers already stored need no arXiv request and are already embedded.
     assert browser.post("/saved", json={"paper_id": paper(5)}).status_code == 201

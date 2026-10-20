@@ -43,19 +43,20 @@ def load(n: int) -> list[dict]:
 
 
 def judge(abstract: str, summary: str, model: str) -> bool | None:
-    text = llm.complete(
-        [
-            {"role": "system", "content": JUDGE_PROMPT},
-            {"role": "user", "content": f"Abstract: {abstract}\n\nSummary: {summary}"},
-        ],
-        name=JUDGE_PROMPT_VERSION,
-        models=[model],
-        response_format={"type": "json_object"},
-        max_tokens=1024,
-    )
+    # An outage or unparseable reply is no verdict; it shouldn't discard the run so far.
     try:
+        text = llm.complete(
+            [
+                {"role": "system", "content": JUDGE_PROMPT},
+                {"role": "user", "content": f"Abstract: {abstract}\n\nSummary: {summary}"},
+            ],
+            name=JUDGE_PROMPT_VERSION,
+            models=[model],
+            response_format={"type": "json_object"},
+            max_tokens=1024,
+        )
         return bool(json.loads(text)["faithful"])
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except Exception:
         return None
 
 
@@ -104,7 +105,9 @@ def main() -> None:
     if verdicts:
         judged = [v for v in verdicts if v is not None]
         rate = f"{100 * sum(judged) / len(judged):.1f}%" if judged else "-"
-        print(f"faithful per {args.judge}: {rate} ({len(verdicts) - len(judged)} unparseable)")
+        print(
+            f"faithful per {args.judge}: {rate} ({len(verdicts) - len(judged)} without a verdict)"
+        )
 
 
 if __name__ == "__main__":

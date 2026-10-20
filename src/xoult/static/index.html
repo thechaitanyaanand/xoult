@@ -126,6 +126,13 @@
   .btn:hover { border-color: var(--muted); }
   .btn.primary { border-color: var(--accent); color: var(--accent); }
   .btn.primary:hover { background: var(--accent-wash); }
+  .welcome .btn.cta { background: var(--accent); color: var(--paper); padding: 0.7rem 1.3rem; font-size: 0.9375rem; }
+  .welcome .btn.cta:hover { filter: brightness(1.1); }
+  .welcome .add { margin: 0 0 2rem; }
+  .tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+  .filter { flex: 1 1 16rem; padding: 0.4rem 0.6rem; border: 1px solid var(--rule); border-radius: 4px;
+            background: transparent; color: inherit; font: inherit; }
+  .tools { margin: -1.5rem 0 2rem; font: 0.8125rem/1.5 var(--sans); color: var(--muted); }
   .link { background: none; border: 0; padding: 0.45rem 0; color: var(--muted); text-decoration: underline;
           text-underline-offset: 3px; font: inherit; }
   .link:hover { color: var(--ink); }
@@ -220,7 +227,6 @@
     <nav aria-label="Sections">
       <a href="#today">Today</a>
       <a href="#saved">Saved <span id="saved-count"></span></a>
-      <a href="#stats">Stats</a>
       <a href="#settings">Settings</a>
     </nav>
   </header>
@@ -242,7 +248,7 @@
     <a href="/papers/cs.CL">cs.CL</a> · <a href="/papers/cs.IR">cs.IR</a> ·
     <a href="/papers/cs.LG">cs.LG</a> · <a href="/papers/cs.AI">cs.AI</a> ·
     <a href="/papers/cs.CV">cs.CV</a> · <a href="/papers/stat.ML">stat.ML</a>
-    · <a href="/privacy">Privacy</a>
+    · <a href="#stats">Ranking stats</a> · <a href="/privacy">Privacy</a>
     <br>Thank you to arXiv for use of its open access interoperability.
   </footer>
 </main>

@@ -193,6 +193,10 @@ class FeedItem(Paper):
     because: str | None = None
 
 
+class SavedPaper(Paper):
+    new: bool  # false if it was already in the reader's library
+
+
 class Feed(BaseModel):
     ranker: str
     latest_date: datetime | None  # most recent arXiv announcement in the database
@@ -683,7 +687,7 @@ def search_arxiv(user: Me, q: Annotated[str, Query(min_length=2, max_length=300)
 
 
 @app.post("/saved", status_code=201, dependencies=[Depends(write_limit)])
-def add_saved(body: AddPaper, user: Me, request: Request) -> Paper:
+def add_saved(body: AddPaper, user: Me, request: Request) -> SavedPaper:
     """Save any arXiv paper, not just one from the feed, fetching it if it's new here.
 
     A paper new to the database has no embedding yet, so this wakes the ingest job to
@@ -726,13 +730,16 @@ def add_saved(body: AddPaper, user: Me, request: Request) -> Paper:
             (paper.id, paper.title, paper.abstract, paper.authors, paper.categories,
              paper.published_at),
         )  # fmt: skip
-        conn.execute(
-            "insert into events (user_id, paper_id, kind) values (%s, %s, 'save')",
-            (user.id, paper.id),
-        )
+        # Idempotent: the search box on Today can't know what's already saved.
+        new = conn.execute(
+            "insert into events (user_id, paper_id, kind) select %(user)s, %(paper)s, 'save' "
+            "where not exists (select 1 from events where user_id = %(user)s "
+            "and paper_id = %(paper)s and kind = 'save')",
+            {"user": user.id, "paper": paper.id},
+        ).rowcount
     if not row:
         request_embedding()
-    return paper
+    return SavedPaper(**paper.model_dump(), new=bool(new))
 
 
 @app.post("/events", status_code=204, dependencies=[Depends(write_limit)])
