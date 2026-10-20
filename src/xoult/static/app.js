@@ -231,7 +231,8 @@ async function renderToday({ fresh = false } = {}) {
     return;
   }
   lastAction = null;
-  view.replaceChildren(
+  view.replaceChildren();  // then append, which skips the null parts; replaceChildren prints "null"
+  append(view,
     el("p", { className: "dateline", textContent: dateline(feed) }),
     feed.items.length
       ? el("ol", { className: "papers" }, ...feed.items.map((p, i) => entry(p, i + 1)))
@@ -270,7 +271,8 @@ async function renderSaved() {
         el("a", { href: "#settings", textContent: "Sign in" }), " to keep them on every device.")
     : null;
   const list = el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true })));
-  view.replaceChildren(
+  view.replaceChildren();
+  append(view,
     el("p", { className: "dateline", textContent: savedLine(papers.length) }),
     nudge,
     addPaper(list, new Set(papers.map((p) => p.id))),
