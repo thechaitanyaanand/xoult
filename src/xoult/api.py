@@ -141,6 +141,13 @@ write_limit = RateLimit(120)
 # shares one server address.
 arxiv_limit = RateLimit(10)
 arxiv_global_limit = RateLimit(20, per_ip=False)
+# Saved papers are never pruned, so hand-added ones are permanent rows. Without a cap,
+# one session could fill the free 500 MB database (where every write fails) in days:
+# 500 a day is ~3 MB, while real readers add a handful each.
+# ponytail: counted in memory, so a restart resets it; it bounds a day of abuse, not a
+# week. Count `papers.ingested_at` of hand-added rows in SQL if that ever matters.
+new_papers_daily_limit = RateLimit(500, seconds=86400, per_ip=False)
+MAX_SAVED = 1000
 LIMITS = (
     signup_limit,
     signup_global_limit,
@@ -149,6 +156,7 @@ LIMITS = (
     write_limit,
     arxiv_limit,
     arxiv_global_limit,
+    new_papers_daily_limit,
 )
 
 Category = Annotated[str, StringConstraints(pattern=r"^[a-z-]+(\.[A-Za-z-]+)?$", max_length=20)]
@@ -518,7 +526,7 @@ def logout(request: Request) -> None:
     request.session.clear()
 
 
-@app.get("/me")
+@app.get("/me", dependencies=[Depends(read_limit)])
 def me(user: Me) -> dict:
     with get_pool().connection() as conn:
         (saved,) = conn.execute(
@@ -685,6 +693,14 @@ def add_saved(body: AddPaper, user: Me, request: Request) -> Paper:
     if not paper_id:
         raise HTTPException(422, "Not an arXiv id")
     with get_pool().connection() as conn:
+        (saved,) = conn.execute(
+            "select count(distinct paper_id) from events where user_id = %s and kind = 'save'",
+            (user.id,),
+        ).fetchone()
+        if saved >= MAX_SAVED:
+            raise HTTPException(
+                409, f"Your library is full ({MAX_SAVED} papers). Remove some first."
+            )
         row = conn.execute(
             "select id, title, tldr, abstract, authors, categories, published_at "
             "from papers where id = %s",
@@ -694,7 +710,7 @@ def add_saved(body: AddPaper, user: Me, request: Request) -> Paper:
         paper = Paper(**dict(zip(Paper.model_fields, row, strict=True)))
     else:
         # Only papers that aren't stored yet cost an arXiv request, so they share its limit.
-        for limit in (arxiv_limit, arxiv_global_limit):
+        for limit in (arxiv_limit, arxiv_global_limit, new_papers_daily_limit):
             limit(request)
         try:
             found = arxiv.get(paper_id)

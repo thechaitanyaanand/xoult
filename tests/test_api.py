@@ -362,6 +362,15 @@ def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
     monkeypatch.setattr(api.arxiv, "search", down)
     assert browser.get("/arxiv", params={"q": "anything"}).status_code == 503
 
+    # Caps that stop one session filling the database with permanent rows.
+    monkeypatch.setattr(api.arxiv, "get", lambda i: {**attention, "id": i})
+    monkeypatch.setattr(api.new_papers_daily_limit, "limit", 1)
+    api.new_papers_daily_limit.counts.clear()  # the adds above counted too
+    assert browser.post("/saved", json={"paper_id": "2601.00001"}).status_code == 201
+    assert browser.post("/saved", json={"paper_id": "2601.00002"}).status_code == 429
+    monkeypatch.setattr(api, "MAX_SAVED", 3)  # 1706.03762, paper(5), 2601.00001
+    assert browser.post("/saved", json={"paper_id": paper(7)}).status_code == 409
+
 
 def test_saves_in_a_burst_wake_the_embedder_once(api, monkeypatch):
     dispatched = []

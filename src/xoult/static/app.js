@@ -288,7 +288,8 @@ function addPaper(list, savedIds) {
   });
   const found = el("ol", { className: "found" });
   const status = el("p", { className: "status", role: "status" });
-  const failed = (e) => (e.status === 503 ? "arXiv isn't answering right now. Try again in a minute."
+  const failed = (e) => (e.status === 409 ? "Your library is full. Remove some papers first."
+    : e.status === 503 ? "arXiv isn't answering right now. Try again in a minute."
     : e.status === 429 ? "Slow down a little, then try again." : "That didn't work. Try again.");
 
   const result = (p) => {

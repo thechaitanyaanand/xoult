@@ -10,7 +10,7 @@ Budget 1.5–2 hours the first time.
 | API + web page | Render (Docker), Singapore: the nearest Render region to Mumbai | `uvicorn xoult.api:app`, from `render.yaml` |
 | Paper ingest | GitHub Actions | `ingest.yml`, weekdays 07:00 and 14:00 UTC |
 | CI + ranking eval gate | GitHub Actions | `ci.yml` on every push and PR |
-| TLDRs | Groq first, then Gemini, OpenRouter, Meta, xAI | Called during ingest only |
+| TLDRs | Groq first, then Gemini, OpenRouter, Meta (all free tiers) | Called during ingest only |
 | Sign-in (optional) | Google Identity Services | Verifies who someone is; nothing else |
 | LLM tracing (optional) | Langfuse | Every TLDR call: prompt, tokens, latency |
 | Error tracking (optional) | Sentry | API exceptions |
@@ -163,7 +163,6 @@ Each key goes in `.env` locally and later in GitHub and Render secrets.
 | Gemini | [aistudio.google.com](https://aistudio.google.com) → Get API key | `GEMINI_API_KEY` | Recommended: takes over when Groq is rate limited |
 | OpenRouter | [openrouter.ai](https://openrouter.ai) → Keys | `OPENROUTER_API_KEY` | Optional. Without credit only `:free` models work, and xoult uses only those |
 | Meta Llama API | [llama.developer.meta.com](https://llama.developer.meta.com) → API keys | `LLAMA_API_KEY` | Optional |
-| xAI | [console.x.ai](https://console.x.ai) → API keys | `XAI_API_KEY` | Optional, paid last resort; needs prepaid credits |
 | Session secret | `uv run python -c "import secrets; print(secrets.token_urlsafe(32))"` | `SECRET_KEY` | Production only; Render generates it for you |
 | Google client ID | Part 3 | `GOOGLE_CLIENT_ID` | Optional: sign-in is hidden without it |
 | Langfuse | [cloud.langfuse.com](https://cloud.langfuse.com) → project → Settings → API Keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
@@ -172,7 +171,7 @@ Each key goes in `.env` locally and later in GitHub and Render secrets.
 
 **How the LLM keys are used.** `llm_models` in `src/xoult/config.py` is tried top to
 bottom: Groq, Gemini Flash-Lite, OpenRouter (free Nemotron), Gemini Flash, OpenRouter
-(free Gemma), Meta Llama, xAI. A model that's rate limited is skipped for 60 s; one with a
+(free Gemma), Meta Llama. A model that's rate limited is skipped for 60 s; one with a
 bad key, no credits or an outage, for 10 minutes. You can run with Groq alone; every
 extra key adds headroom.
 
@@ -182,7 +181,7 @@ extra key adds headroom.
 uv run python -m xoult.ingest --tldrs 5
 ```
 
-Expected: `wrote 5/5 tldrs`. A line like `xai/… failed with APIError; trying the next
+Expected: `wrote 5/5 tldrs`. A line like `meta_llama/… failed with APIError; trying the next
 model` names a provider whose key is wrong or has no credits. The chain carries on
 without it.
 
@@ -315,7 +314,7 @@ that nobody saved or dismissed, so the database levels off around 190 MB of the 
    | `DATABASE_URL` | Yes: the Supabase session pooler URI |
    | `GROQ_API_KEY` | Yes |
    | `GEMINI_API_KEY` | Recommended |
-   | `OPENROUTER_API_KEY`, `LLAMA_API_KEY`, `XAI_API_KEY` | Optional fallbacks |
+   | `OPENROUTER_API_KEY`, `LLAMA_API_KEY` | Optional fallbacks |
    | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
 
    Ingest is the only workflow that uses these. CI needs no secrets: its tests use a

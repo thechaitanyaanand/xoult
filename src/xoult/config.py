@@ -36,7 +36,8 @@ class Settings(BaseSettings):
 
     # Tried in order; a model that is rate limited or broken is skipped for a while (llm.py).
     # Free tiers first, fastest first, alternating providers so one outage never blocks
-    # two steps in a row. xAI bills per token, so it is the last resort.
+    # two steps in a row. All free tiers: a provider that runs out simply stops answering
+    # until its quota resets, so nothing here can run up a bill.
     llm_models: list[str] = [
         "groq/openai/gpt-oss-20b",
         "gemini/gemini-3.5-flash-lite",
@@ -44,7 +45,6 @@ class Settings(BaseSettings):
         "gemini/gemini-3.5-flash",
         "openrouter/google/gemma-4-31b-it:free",
         "meta_llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
-        "xai/grok-4.20-non-reasoning",
     ]
     llm_rpm: int = 25
     tldrs_per_run: int = 300

@@ -109,8 +109,9 @@ Scale), and `/stats` is public on purpose (aggregates only).
 ## LLM calls
 
 `llm.complete` tries models in order (`settings.llm_models`). Free tiers come first,
-providers alternate so one outage doesn't block two steps in a row, and the paid one
-comes last:
+providers alternate so one outage doesn't block two steps in a row. Every one is a free
+tier, so a runaway loop or a leaked key can't cost money; a paid provider was dropped
+for that reason:
 
 1. `groq/openai/gpt-oss-20b`, about 1 s
 2. `gemini/gemini-3.5-flash-lite`, about 1 s
@@ -118,7 +119,6 @@ comes last:
 4. `gemini/gemini-3.5-flash` (its own free quota)
 5. `openrouter/google/gemma-4-31b-it:free` (free models share capacity, often busy)
 6. `meta_llama/Llama-4-Maverick-17B-128E-Instruct-FP8`
-7. `xai/grok-4.20-non-reasoning`, which bills per token
 
 A rate-limited model is skipped for 60 s. A failing one (bad key, no credits, outage) is
 skipped for 10 minutes. Without this, every call under load would first retry the
