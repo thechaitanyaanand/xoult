@@ -8,7 +8,8 @@ decision says what it costs and what would make it wrong.
 | Piece | Runs on | Talks to |
 | --- | --- | --- |
 | Ingest (`ingest.py`): arXiv RSS → embed → TLDR → prune | GitHub Actions, weekdays 07:00 and 14:00 UTC | arXiv, LLM providers, Postgres |
-| API + page (`api.py`, `static/`) | One Render container | Postgres, Google (sign-in only) |
+| Embed-only ingest, for papers added by hand | GitHub Actions, dispatched by the API | Postgres |
+| API + page (`api.py`, `static/`) | One Render container | Postgres, Google (sign-in), arXiv API (adding papers), GitHub API (wake-up) |
 | Postgres + pgvector | Supabase | — |
 
 The two halves share nothing but the database, so either can fail or redeploy alone.
@@ -175,6 +176,40 @@ What would change this:
   (categories, day) and rank per user in memory.
 - **Global audience or heavy traffic:** put Cloudflare's free CDN in front for static
   files and DDoS/bot filtering. It needs a custom domain.
+
+## Papers added by hand
+
+Readers can save any arXiv paper by link or title, not only ones the feed showed. A
+paper needs an embedding before it counts in their profile, and the API container
+carries no model.
+
+- **Decision:** the save writes the paper with `embedding = null` and returns at once.
+  It then wakes the existing ingest workflow in embed-only mode through GitHub's
+  `workflow_dispatch` API. The run embeds every null row (usually seconds of work after
+  ~1 minute of runner start-up). The paper counts from the reader's next feed load.
+- **The column is the queue; the dispatch is only a wake-up.** If a dispatch is lost
+  (API restart while waiting, GitHub outage, no token set), nothing is lost: the next
+  scheduled run embeds the row. Embedding is idempotent, so a duplicate or overlapping
+  run costs only runner time. This is the transactional-outbox pattern without a
+  separate outbox table.
+- **Bursts coalesce twice.** The API sends at most one dispatch a minute (a trailing
+  timer), and the workflow's `embed` concurrency group keeps at most one run waiting.
+  Its own group means a burst of saves can never cancel a queued daily ingest.
+- **One model, one code path.** The same `embed_missing` with the same model writes
+  every vector, so hand-added papers live in the same space as the rest. A hosted
+  embedding API would answer faster but could drift from the local ONNX model's
+  tokenization and normalization and silently skew similarities.
+- **Rejected: embedding in the API.** Loading fastembed and the model grows a process
+  by about 190 MB (measured: 29 → 216 MB RSS), over a third of the free 512 MB instance,
+  for something that happens a few times a day.
+- **Cost:** the repository is public, so Actions minutes are free. On a private repo
+  each run spends about 1–2 of the 2,000 free monthly minutes.
+- **Trigger to change:** saves arriving faster than about one a minute all day, or
+  latency mattering more than a minute or two.
+- **Path:** a Render background worker (or any always-on process) holding the model and
+  polling `select … where embedding is null for update skip locked`, or woken by Postgres
+  `LISTEN/NOTIFY`. The queue (the null column) and the job (`embed_missing`) stay as
+  they are; only the thing that runs it changes.
 
 ## Scale: what we don't run, and when we would
 

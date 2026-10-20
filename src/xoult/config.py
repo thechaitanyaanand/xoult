@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # request's own host is used, which is fine locally.
     public_url: str | None = None
 
+    # Wakes the ingest workflow to embed papers readers add by hand. A fine-grained token
+    # for this one repo with "Actions: read and write". Unset, added papers wait for the
+    # next scheduled run.
+    github_token: str | None = None
+    github_repo: str = "thechaitanyaanand/xoult"
+
     arxiv_categories: list[str] = ["cs.CL", "cs.IR", "cs.LG", "cs.AI", "cs.CV", "stat.ML"]
 
     # Picked by evals/rank_eval.py: best NDCG@10 of the 384-dim models tried, and the

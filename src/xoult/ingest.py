@@ -2,7 +2,6 @@ import argparse
 import logging
 import re
 import time
-import unicodedata
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime
@@ -11,6 +10,7 @@ from email.utils import parsedate_to_datetime
 import httpx
 
 from xoult import llm
+from xoult.arxiv import clean as _clean
 from xoult.config import settings
 from xoult.db import get_pool
 from xoult.embed import document_text, embed
@@ -33,20 +33,6 @@ class Paper:
     authors: list[str]
     categories: list[str]
     published_at: datetime
-
-
-# arXiv metadata keeps TeX accent escapes: Ga\"etan, Cl\'ement, Sch{\"o}lkopf, \c{c}.
-ACCENTS = {
-    '"': "̈", "'": "́", "`": "̀", "^": "̂", "~": "̃", "=": "̄",
-    ".": "̇", "c": "̧", "v": "̌", "u": "̆", "H": "̋",
-}  # fmt: skip
-TEX_ACCENT = re.compile(r"""\{?\\(["'`^~=.]|[cvuH](?=[\s{]))\s*\{?\\?([A-Za-z])\}?\}?""")
-
-
-def _clean(text: str | None) -> str:
-    text = " ".join((text or "").split())
-    text = TEX_ACCENT.sub(lambda m: m[2] + ACCENTS[m[1]], text)
-    return unicodedata.normalize("NFC", text)
 
 
 def parse_feed(xml: str) -> list[Paper]:
@@ -124,13 +110,14 @@ def embed_missing(batch_size: int = 256) -> int:
 
 
 # The free LLM quota covers a few hundred TLDRs a day, fewer than arXiv announces, so
-# spend it where readers will look: papers already shown in someone's feed, then papers
-# in categories someone follows, then the newest of the rest.
+# spend it where readers will look: papers already shown in someone's feed or saved
+# into their library by hand, then papers in categories someone follows, then the newest.
 NEEDS_TLDR = """
 select p.id, p.title, p.abstract from papers p
 where p.tldr is null
 order by
-    exists (select 1 from events e where e.paper_id = p.id and e.kind = 'impression') desc,
+    exists (select 1 from events e where e.paper_id = p.id and e.kind in ('impression', 'save'))
+        desc,
     p.categories && (select coalesce(array_agg(distinct c), '{}') from users, unnest(categories) c)
         desc,
     p.published_at desc
@@ -197,7 +184,16 @@ def main() -> None:
         action="store_true",
         help="drop all embeddings first; required after changing EMBEDDING_MODEL",
     )
+    parser.add_argument(
+        "--embed-only",
+        action="store_true",
+        help="only embed papers that lack a vector, e.g. ones a reader just saved by hand",
+    )
     args = parser.parse_args()
+
+    if args.embed_only:
+        embed_missing()
+        return
 
     if args.reembed:
         # Vectors from two models live in different spaces; mixing them silently

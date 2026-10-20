@@ -1,5 +1,8 @@
+import json
+import logging
 import threading
 import time
+import urllib.request
 from collections import Counter
 from datetime import date, datetime
 from html import escape
@@ -18,7 +21,7 @@ from google.oauth2 import id_token
 from pydantic import BaseModel, Field, StringConstraints
 from starlette.middleware.sessions import SessionMiddleware
 
-from xoult import rank
+from xoult import arxiv, rank
 from xoult.config import DEV_SECRET, settings
 from xoult.db import get_pool
 
@@ -29,6 +32,7 @@ if settings.cookie_secure and (settings.secret_key == DEV_SECRET or len(settings
 if settings.sentry_dsn:
     sentry_sdk.init(dsn=settings.sentry_dsn, traces_sample_rate=0.1, send_default_pii=False)
 
+log = logging.getLogger("xoult.api")
 STATIC = Path(__file__).parent / "static"
 CATEGORY_NAMES = {
     "cs.AI": "Artificial Intelligence",
@@ -55,7 +59,7 @@ CSP = "; ".join(
     ]
 )
 
-PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config")
+PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config", "/arxiv")
 
 # The interactive API docs are for local development; production doesn't advertise its API.
 docs = (
@@ -133,7 +137,19 @@ signup_global_limit = RateLimit(300, seconds=3600, per_ip=False)
 auth_limit = RateLimit(10)
 read_limit = RateLimit(60)
 write_limit = RateLimit(120)
-LIMITS = (signup_limit, signup_global_limit, auth_limit, read_limit, write_limit)
+# arXiv asks API clients for at most one request every three seconds, and everyone here
+# shares one server address.
+arxiv_limit = RateLimit(10)
+arxiv_global_limit = RateLimit(20, per_ip=False)
+LIMITS = (
+    signup_limit,
+    signup_global_limit,
+    auth_limit,
+    read_limit,
+    write_limit,
+    arxiv_limit,
+    arxiv_global_limit,
+)
 
 Category = Annotated[str, StringConstraints(pattern=r"^[a-z-]+(\.[A-Za-z-]+)?$", max_length=20)]
 
@@ -145,6 +161,10 @@ class Categories(BaseModel):
 class Event(BaseModel):
     paper_id: str = Field(max_length=32)
     kind: Literal["click", "save", "dismiss"]  # impressions are only logged server-side
+
+
+class AddPaper(BaseModel):
+    paper_id: str = Field(max_length=300)  # an id or a pasted link
 
 
 class GoogleCredential(BaseModel):
@@ -216,7 +236,7 @@ def index(request: Request) -> HTMLResponse:
 def robots(request: Request) -> PlainTextResponse:
     # Search and AI crawlers get the landing page and llms.txt; the per-user API is
     # useless to them and only spends their crawl budget and our rate limits.
-    private = ["/feed", "/saved", "/me", "/events", "/users", "/auth/"]
+    private = ["/feed", "/saved", "/me", "/events", "/users", "/auth/", "/arxiv"]
     lines = ["User-agent: *", "Allow: /$", *(f"Disallow: {p}" for p in private)]
     return PlainTextResponse(
         "\n".join([*lines, "", f"Sitemap: {_origin(request)}/sitemap.xml", ""])
@@ -596,6 +616,107 @@ def get_saved(user: Me) -> list[Paper]:
             (user.id,),
         ).fetchall()
     return [Paper(**dict(zip(Paper.model_fields, row, strict=True))) for row in rows]
+
+
+# A paper only shapes the feed once it has an embedding, and only the ingest job has the
+# model (this image stays small enough for 512 MB). So a save wakes that job. The
+# `embedding is null` rows are the queue and the dispatch is just a wake-up: if one is
+# lost to a restart or a GitHub outage, the next scheduled run embeds the paper anyway.
+# Saves within EMBED_DELAY share one run instead of starting one each.
+EMBED_DELAY = 60
+_embed_timer: threading.Timer | None = None
+_embed_lock = threading.Lock()
+
+
+def request_embedding() -> None:
+    global _embed_timer
+    if not settings.github_token:
+        return
+    with _embed_lock:
+        if _embed_timer and _embed_timer.is_alive():
+            return  # a run is already on its way; it will pick this paper up too
+        _embed_timer = threading.Timer(EMBED_DELAY, dispatch_embed)
+        _embed_timer.daemon = True
+        _embed_timer.start()
+
+
+def dispatch_embed() -> None:
+    url = (
+        f"https://api.github.com/repos/{settings.github_repo}"
+        "/actions/workflows/ingest.yml/dispatches"
+    )
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"ref": "main", "inputs": {"embed_only": "true"}}).encode(),
+        headers={
+            "Authorization": f"Bearer {settings.github_token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        urllib.request.urlopen(request, timeout=10).close()
+    except Exception:
+        # The save itself already succeeded; the scheduled run is the fallback.
+        log.exception("couldn't start the embedding run")
+
+
+ArxivLimits = [Depends(arxiv_limit), Depends(arxiv_global_limit)]
+ARXIV_DOWN = "arXiv isn't answering right now. Try again in a minute."
+
+
+@app.get("/arxiv", dependencies=ArxivLimits)
+def search_arxiv(user: Me, q: Annotated[str, Query(min_length=2, max_length=300)]) -> list[Paper]:
+    """Find papers to add by hand: a pasted arXiv link or id, or words from the title."""
+    try:
+        return [Paper(**p) for p in arxiv.search(q)]
+    except arxiv.Unavailable:
+        raise HTTPException(503, ARXIV_DOWN) from None
+
+
+@app.post("/saved", status_code=201, dependencies=[Depends(write_limit)])
+def add_saved(body: AddPaper, user: Me, request: Request) -> Paper:
+    """Save any arXiv paper, not just one from the feed, fetching it if it's new here.
+
+    A paper new to the database has no embedding yet, so this wakes the ingest job to
+    embed it; it shapes the feed a few minutes later.
+    """
+    paper_id = arxiv.parse_id(body.paper_id)
+    if not paper_id:
+        raise HTTPException(422, "Not an arXiv id")
+    with get_pool().connection() as conn:
+        row = conn.execute(
+            "select id, title, tldr, abstract, authors, categories, published_at "
+            "from papers where id = %s",
+            (paper_id,),
+        ).fetchone()
+    if row:
+        paper = Paper(**dict(zip(Paper.model_fields, row, strict=True)))
+    else:
+        # Only papers that aren't stored yet cost an arXiv request, so they share its limit.
+        for limit in (arxiv_limit, arxiv_global_limit):
+            limit(request)
+        try:
+            found = arxiv.get(paper_id)
+        except arxiv.Unavailable:
+            raise HTTPException(503, ARXIV_DOWN) from None
+        if not found:
+            raise HTTPException(404, "No arXiv paper with that id")
+        paper = Paper(**found)
+    with get_pool().connection() as conn, conn.transaction():
+        conn.execute(
+            "insert into papers (id, title, abstract, authors, categories, published_at) "
+            "values (%s, %s, %s, %s, %s, %s) on conflict (id) do nothing",
+            (paper.id, paper.title, paper.abstract, paper.authors, paper.categories,
+             paper.published_at),
+        )  # fmt: skip
+        conn.execute(
+            "insert into events (user_id, paper_id, kind) values (%s, %s, 'save')",
+            (user.id, paper.id),
+        )
+    if not row:
+        request_embedding()
+    return paper
 
 
 @app.post("/events", status_code=204, dependencies=[Depends(write_limit)])

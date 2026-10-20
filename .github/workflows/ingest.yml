@@ -8,8 +8,16 @@ on:
     - cron: "0 7 * * 1-5"
     - cron: "0 14 * * 1-5"
   workflow_dispatch:
+    inputs:
+      # Sent by the API when a reader saves a paper that isn't embedded yet (api.py).
+      embed_only:
+        description: Only embed papers that lack a vector
+        type: boolean
+        default: false
 
-concurrency: ingest
+# Its own group, so a burst of saves can't cancel a queued daily run. Overlapping with
+# one is harmless: both write the same vectors for the same papers.
+concurrency: ${{ inputs.embed_only && 'embed' || 'ingest' }}
 
 jobs:
   ingest:
@@ -37,13 +45,15 @@ jobs:
           path: .cache/fastembed
           key: fastembed-${{ hashFiles('evals/baseline.json') }}
       - name: Check required secrets
+        env:
+          EMBED_ONLY: ${{ inputs.embed_only }}
         run: |
           missing=""
           [ -z "$DATABASE_URL" ] && missing="$missing DATABASE_URL"
-          [ -z "$GROQ_API_KEY$GEMINI_API_KEY$OPENROUTER_API_KEY" ] && missing="$missing GROQ_API_KEY"
+          [ -z "$GROQ_API_KEY$GEMINI_API_KEY$OPENROUTER_API_KEY" ] && [ "$EMBED_ONLY" != true ] && missing="$missing GROQ_API_KEY"
           if [ -n "$missing" ]; then
             echo "::error::Missing repository secrets:$missing (Settings → Secrets and variables → Actions)"
             exit 1
           fi
       - run: uv run python -m xoult.db
-      - run: uv run python -m xoult.ingest
+      - run: uv run python -m xoult.ingest ${{ inputs.embed_only && '--embed-only' || '' }}

@@ -321,3 +321,57 @@ def test_stats_counts_each_shown_paper_once(browser):
     assert row["ranker"] == "v2-hybrid"
     assert row["impressions"] == 5  # not 10: the reload is not five more chances
     assert row["save_rate"] == 0.2
+
+
+def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
+    attention = {
+        "id": "1706.03762", "title": "Attention Is All You Need", "abstract": "Transformers.",
+        "authors": ["Ashish Vaswani"], "categories": ["cs.CL", "cs.LG"],
+        "published_at": datetime(2017, 6, 12, tzinfo=UTC), "tldr": None,
+    }  # fmt: skip
+    calls, wakeups = [], []
+    monkeypatch.setattr(api, "request_embedding", lambda: wakeups.append(1))
+    monkeypatch.setattr(api.arxiv, "search", lambda q: calls.append(q) or [attention])
+    monkeypatch.setattr(api.arxiv, "get", lambda i: calls.append(i) or dict(attention))
+
+    assert browser.get("/arxiv", params={"q": "attention"}).status_code == 401
+    start(browser)
+    found = browser.get("/arxiv", params={"q": "attention is all you need"})
+    assert found.headers["cache-control"] == "no-store"
+    assert [p["title"] for p in found.json()] == ["Attention Is All You Need"]
+
+    r = browser.post("/saved", json={"paper_id": "https://arxiv.org/abs/1706.03762v7"})
+    assert r.status_code == 201 and r.json()["id"] == "1706.03762"
+    assert [p["id"] for p in browser.get("/saved").json()] == ["1706.03762"]
+    assert browser.get("/me").json()["saved"] == 1
+    # A 2017 paper never shows up in the feed, and arXiv is asked only once for it.
+    assert "1706.03762" not in {i["id"] for i in browser.get("/feed").json()["items"]}
+    assert browser.post("/saved", json={"paper_id": "1706.03762"}).status_code == 201
+    assert calls == ["attention is all you need", "1706.03762"]
+    # Papers already stored need no arXiv request and are already embedded.
+    assert browser.post("/saved", json={"paper_id": paper(5)}).status_code == 201
+    assert len(calls) == 2 and len(wakeups) == 1
+
+    assert browser.post("/saved", json={"paper_id": "not an id"}).status_code == 422
+    monkeypatch.setattr(api.arxiv, "get", lambda i: None)
+    assert browser.post("/saved", json={"paper_id": "2601.99999"}).status_code == 404
+
+    def down(_):
+        raise api.arxiv.Unavailable("429")
+
+    monkeypatch.setattr(api.arxiv, "search", down)
+    assert browser.get("/arxiv", params={"q": "anything"}).status_code == 503
+
+
+def test_saves_in_a_burst_wake_the_embedder_once(api, monkeypatch):
+    dispatched = []
+    monkeypatch.setattr(settings, "github_token", "token")
+    monkeypatch.setattr(api, "EMBED_DELAY", 0.2)
+    monkeypatch.setattr(api, "dispatch_embed", lambda: dispatched.append(1))
+    for _ in range(5):
+        api.request_embedding()
+    api._embed_timer.join()
+    assert dispatched == [1]
+    api.request_embedding()  # a save after the run started gets a run of its own
+    api._embed_timer.join()
+    assert dispatched == [1, 1]

@@ -259,11 +259,71 @@ async function renderSaved() {
     ? el("p", { className: "nudge" }, "These live only in this browser. ",
         el("a", { href: "#settings", textContent: "Sign in" }), " to keep them on every device.")
     : null;
+  const list = el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true })));
   view.replaceChildren(
     el("p", { className: "dateline", textContent: savedLine(papers.length) }),
     nudge,
-    el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true }))),
+    addPaper(list, new Set(papers.map((p) => p.id))),
+    list,
   );
+}
+
+// Any arXiv paper can go in the library, not only ones the feed showed.
+function addPaper(list, savedIds) {
+  const input = el("input", {
+    id: "add-q", type: "search", required: true, minLength: 2, maxLength: 300, autocomplete: "off",
+    placeholder: "arxiv.org/abs/1706.03762, or a title",
+  });
+  const found = el("ol", { className: "found" });
+  const status = el("p", { className: "status", role: "status" });
+  const failed = (e) => (e.status === 503 ? "arXiv isn't answering right now. Try again in a minute."
+    : e.status === 429 ? "Slow down a little, then try again." : "That didn't work. Try again.");
+
+  const result = (p) => {
+    const button = el("button", { className: "btn primary", textContent: "Save", type: "button" });
+    const done = () => button.replaceWith(el("span", { className: "note", textContent: "Saved" }));
+    button.onclick = async () => {
+      button.disabled = true;
+      try {
+        const paper = await api("/saved", { method: "POST", body: JSON.stringify({ paper_id: p.id }) });
+        savedIds.add(paper.id);
+        list.prepend(entry(paper, 0, { saved: true }));
+        setSavedCount(me.saved + 1);
+        $(".dateline").textContent = savedLine(me.saved);
+        say("Saved");
+        done();
+      } catch (e) {
+        button.disabled = false;
+        say(failed(e));
+      }
+    };
+    const item = el("li", {},
+      el("a", { href: `https://arxiv.org/abs/${p.id}`, target: "_blank", rel: "noopener", textContent: p.title }),
+      el("span", { className: "byline", textContent: ` ${authors(p.authors)} · ${new Date(p.published_at).getFullYear()}` }),
+      button);
+    if (savedIds.has(p.id)) done();
+    return item;
+  };
+
+  const form = el("form", { className: "add", role: "search" },
+    el("label", { htmlFor: "add-q", textContent: "Add a paper from arXiv" }),
+    el("div", { className: "row" }, input, el("button", { className: "btn", textContent: "Find" })),
+    status, found);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    found.replaceChildren();
+    status.textContent = "Searching arXiv…";
+    try {
+      const papers = await api(`/arxiv?${new URLSearchParams({ q: input.value.trim() })}`);
+      status.textContent = papers.length
+        ? "Saved papers shape your ranking from the next daily update."
+        : "Nothing on arXiv matches that. Try the link, or fewer words from the title.";
+      found.replaceChildren(...papers.map(result));
+    } catch (err) {
+      status.textContent = failed(err);
+    }
+  };
+  return form;
 }
 
 /* ---------- Stats ---------- */

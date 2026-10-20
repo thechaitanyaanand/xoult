@@ -362,6 +362,7 @@ starts scheduled runs several minutes late; that's normal.
    | `GOOGLE_CLIENT_ID` | Your client ID, or empty to hide sign-in |
    | `PUBLIC_URL` | The app's address, e.g. `https://xoult-abcd.onrender.com`; fill it in once the first deploy shows the URL |
    | `SENTRY_DSN` | Your DSN, or empty |
+   | `GITHUB_TOKEN` | Optional. GitHub → Settings → Developer settings → Fine-grained tokens → this repo only, **Actions: Read and write**. Lets a paper a reader adds by hand count within minutes; empty means it waits for the next scheduled ingest. Set `GITHUB_REPO` too if your fork isn't `thechaitanyaanand/xoult` |
 
    `render.yaml` sets the rest:
    - **`SECRET_KEY`** is generated once by Render. **Never regenerate it:** anonymous

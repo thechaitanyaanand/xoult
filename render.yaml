@@ -12,6 +12,9 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      # Optional: wakes the ingest workflow to embed papers readers add by hand
+      - key: GITHUB_TOKEN
+        sync: false
       - key: GOOGLE_CLIENT_ID
         sync: false
       # e.g. https://xoult.onrender.com, for link previews, robots.txt and the sitemap
