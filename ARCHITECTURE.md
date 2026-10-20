@@ -166,6 +166,11 @@ HTTP caching:
 - Personal responses (`/feed`, `/saved`, `/me`, `/events`, `/auth/*`, `/config`) send
   `Cache-Control: no-store`, so no proxy, CDN or shared machine keeps a copy of someone's
   data.
+- Instead, the page keeps Today's ranked list and the saved list in memory for an hour
+  (`app.js`), so switching tabs costs no request. Any save, dismiss, undo or added paper
+  in this tab clears the saved list's copy; "Re-rank" refetches Today. Memory, not
+  `localStorage` or `Cache-Control: private`: it dies with the tab, so nothing personal
+  outlives a session on a shared computer, and a fresh visit always logs its impressions.
 - Static files carry ETags, so a returning browser revalidates with a 304 instead of
   downloading them again.
 - Responses over 1 KB are gzipped. The feed's ~40 KB of JSON shrinks about 4×, which

@@ -54,6 +54,7 @@ function untrack(paperId, kind) {
 }
 
 function setSavedCount(n) {
+  savedCache = null;  // every change to the saved list comes through here
   if (me) me.saved = Math.max(0, n);
   $("#saved-count").textContent = me && me.saved ? `(${me.saved})` : "";
 }
@@ -247,14 +248,23 @@ const savedLine = (n) => (n
   ? `${n} saved, most recent first. Each one shapes your ranking.`
   : "Nothing saved yet. Save papers from Today and they collect here.");
 
+// Like Today's: switching tabs shouldn't refetch. Saves elsewhere (another device) show
+// within the TTL; saves here clear it through setSavedCount.
+let savedCache = null;  // { key, at, papers }
+
 async function renderSaved() {
-  view.replaceChildren(el("p", { className: "status", textContent: "Loading saved papers…" }));
   let papers;
-  try { papers = await api("/saved"); } catch (e) {
-    if (e.status !== 401) view.replaceChildren(failure(renderSaved));
-    return;
+  if (savedCache && savedCache.key === me.id && Date.now() - savedCache.at < TODAY_TTL) {
+    papers = savedCache.papers;
+  } else {
+    view.replaceChildren(el("p", { className: "status", textContent: "Loading saved papers…" }));
+    try { papers = await api("/saved"); } catch (e) {
+      if (e.status !== 401) view.replaceChildren(failure(renderSaved));
+      return;
+    }
+    setSavedCount(papers.length);
+    savedCache = { key: me.id, at: Date.now(), papers };
   }
-  setSavedCount(papers.length);
   const nudge = !me.signed_in && config.google_client_id && papers.length >= 3
     ? el("p", { className: "nudge" }, "These live only in this browser. ",
         el("a", { href: "#settings", textContent: "Sign in" }), " to keep them on every device.")
