@@ -382,10 +382,15 @@ Every push to `main` redeploys automatically.
 
 **The free plan sleeps.** After 15 minutes without traffic the service stops, and the
 next visit waits 30–60 s while it boots; the page says the server may be waking up.
-750 free hours a month is enough for one service running all month. If you want it
-always awake, a free uptime monitor (for example UptimeRobot) can request `/health`
-every 5 minutes. That's a judgement call about the free tier's intent, so it isn't set
-up by default.
+To keep it awake, a free UptimeRobot monitor requests `/health` every 5 minutes
+(HTTP(s) monitor, 5-minute interval). `/health` also touches the database, so Supabase
+never pauses either. GitHub Actions cron isn't used for this: its schedules run late or
+get skipped, and any gap over 15 minutes lets the service sleep.
+
+Render's free terms allow this. Only heavy *outbound* traffic gets a service flagged,
+and these pings are tiny inbound requests. The real limit is hours: awake all month
+uses ~744 of the workspace's 750 free hours, so this must be the workspace's **only**
+free web service. Run out and Render suspends every free service until the next month.
 
 **Custom domain (optional).** Render → Settings → Custom Domains, then add that
 `https://` origin to Google's console and `PUBLIC_URL`.
