@@ -1,4 +1,5 @@
-"""Look up papers on the arXiv API, for readers adding papers to their library by hand.
+"""Look up papers for readers' libraries: on arXiv, and through OpenAlex for a
+researcher's own papers (by ORCID iD or author name).
 
 Stdlib only: the API image has no httpx (see the Dockerfile).
 """
@@ -82,6 +83,91 @@ def _query(params: dict) -> list[dict]:
 def get(paper_id: str) -> dict | None:
     papers = _query({"id_list": paper_id, "max_results": 1})
     return papers[0] if papers else None
+
+
+def get_many(paper_ids: list[str]) -> list[dict]:
+    """Up to a few dozen papers in one request, in the order asked for."""
+    if not paper_ids:
+        return []
+    found = {
+        p["id"]: p for p in _query({"id_list": ",".join(paper_ids), "max_results": len(paper_ids)})
+    }
+    return [found[i] for i in paper_ids if i in found]
+
+
+# ORCID records mostly carry publisher DOIs, not arXiv ids (Bengio's: 20 works, 0 linked
+# to arXiv), so ORCID alone can't find someone's preprints. OpenAlex links ORCID iDs and
+# disambiguated authors to every copy of a work, arXiv's included (Bengio: 692).
+OPENALEX = "https://api.openalex.org/"
+OPENALEX_ARXIV = "S4306400194"  # OpenAlex's id for arXiv as a source
+ORCID = re.compile(r"(\d{4}-\d{4}-\d{4}-\d{3}[\dX])")
+# An arXiv copy is linked as arxiv.org/abs/<id>, or only by arXiv's DOI (the newest ones).
+ARXIV_LINK = re.compile(
+    r"(?:arxiv\.org/(?:abs|pdf)/|10\.48550/arxiv\.)(.+?)(?:v\d+)?(?:\.pdf)?$", re.I
+)
+
+
+def parse_orcid(text: str) -> str | None:
+    match = ORCID.search(text.strip().upper())
+    return match[1] if match else None
+
+
+def _openalex(path: str, params: dict) -> dict:
+    url = OPENALEX + path + "?" + urllib.parse.urlencode(params)
+    request = urllib.request.Request(url, headers={"User-Agent": "xoult (paper library)"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.load(response)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        raise Unavailable(str(e)) from None
+
+
+def find_authors(name: str, limit: int = 5) -> list[dict]:
+    """People with this name, most published first, so a reader can pick themselves."""
+    data = _openalex(
+        "authors",
+        {
+            "search": name,
+            "per-page": limit,
+            "select": "id,display_name,orcid,works_count,last_known_institutions",
+        },
+    )
+    return [
+        {
+            "id": a["id"].rsplit("/", 1)[-1],
+            "name": a["display_name"],
+            "works": a["works_count"],
+            "institution": next(
+                (i["display_name"] for i in a.get("last_known_institutions") or []), None
+            ),
+        }
+        for a in data["results"]
+    ]
+
+
+def authored_arxiv_ids(
+    *, orcid: str | None = None, author: str | None = None, limit: int = 20
+) -> list[str]:
+    """arXiv ids of someone's most recent preprints, by ORCID iD or OpenAlex author id."""
+    who = f"author.orcid:{orcid}" if orcid else f"author.id:{author}"
+    data = _openalex(
+        "works",
+        {
+            "filter": f"{who},locations.source.id:{OPENALEX_ARXIV}",
+            "sort": "publication_date:desc",
+            "per-page": limit,
+            "select": "locations",
+        },
+    )
+    ids = []
+    for work in data["results"]:
+        for location in work["locations"]:
+            match = ARXIV_LINK.search(location.get("landing_page_url") or "")
+            paper_id = match and parse_id(match[1])
+            if paper_id:
+                ids.append(paper_id)
+                break
+    return list(dict.fromkeys(ids))  # one work can be listed twice
 
 
 def search(text: str, limit: int = 5) -> list[dict]:

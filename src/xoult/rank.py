@@ -10,6 +10,8 @@ from psycopg.rows import class_row
 from xoult import lexical
 
 RANKER = "v2-hybrid"
+FOLLOWS = "follows"  # the ranker label on picks from followed authors
+MAX_FOLLOWED = 3
 WINDOW_DAYS = 7
 CANDIDATES = 200
 
@@ -26,6 +28,7 @@ class Candidate:
     similarity: float
     embedding: Vector | None = None
     because: str | None = None  # title of the saved paper this one is closest to
+    followed: str | None = None  # the followed author this paper is shown for
 
 
 @dataclass(frozen=True)
@@ -141,6 +144,20 @@ limit %(k)s
 """
 
 
+# New papers by authors the reader follows, from any category: they follow the person,
+# not the topic. The newest few lead the feed whatever their similarity score.
+FROM_FOLLOWED = f"""
+select id, title, tldr, abstract, authors, categories, published_at, 0.0 as similarity,
+       (select a from unnest(authors) a where a = any(%(follows)s) limit 1) as followed
+from papers
+where authors && %(follows)s
+  and published_at > now() - make_interval(days => %(days)s)
+  and id not in ({SEEN})
+order by published_at desc
+limit %(n)s
+"""
+
+
 @dataclass
 class Feedback:
     saved_titles: list[str]
@@ -199,6 +216,16 @@ def feed(conn: Connection, user_id: UUID, categories: list[str], limit: int) -> 
         )
         blended = relevance(np.array([c.similarity for c in candidates]), lex)
     items = rerank(candidates, set(categories), datetime.now(UTC), relevance=blended)[:limit]
+
+    follows = [
+        a for (a,) in conn.execute("select author from follows where user_id = %s", (user_id,))
+    ]
+    if follows:
+        with conn.cursor(row_factory=class_row(Candidate)) as cur:
+            cur.execute(FROM_FOLLOWED, {**params, "follows": follows, "n": MAX_FOLLOWED})
+            pinned = cur.fetchall()
+        shown = {c.id for c in pinned}
+        items = (pinned + [c for c in items if c.id not in shown])[:limit]
 
     if len(fb.saved) and items:
         # Embeddings only for what is shown: 20 vectors, not 200, cross the network.

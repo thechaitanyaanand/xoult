@@ -53,3 +53,14 @@ alter table events enable row level security;
 create index if not exists events_user_idx on events (user_id, created_at desc);
 -- "has anyone been shown this paper?" when picking which TLDRs to write first
 create index if not exists events_paper_idx on events (paper_id, kind);
+
+-- Authors a reader follows, by name as arXiv prints it. arXiv doesn't disambiguate
+-- authors, so two people with one name share a follow; OpenAlex ids would fix that.
+-- Private: never shown to anyone else, exported and deleted with the account.
+create table if not exists follows (
+    user_id    uuid not null references users (id) on delete cascade,
+    author     text not null,
+    created_at timestamptz not null default now(),
+    primary key (user_id, author)
+);
+alter table follows enable row level security;

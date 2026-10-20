@@ -44,7 +44,7 @@ def api():
              published, v / np.linalg.norm(v))
         )  # fmt: skip
     with get_pool().connection() as conn:
-        conn.execute("truncate events, users, papers")
+        conn.execute("truncate follows, events, users, papers")
         with conn.cursor() as cur:
             cur.executemany(
                 "insert into papers (id, title, abstract, authors, categories, published_at,"
@@ -332,7 +332,11 @@ def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
     calls, wakeups = [], []
     monkeypatch.setattr(api, "request_embedding", lambda: wakeups.append(1))
     monkeypatch.setattr(api.arxiv, "search", lambda q: calls.append(q) or [attention])
-    monkeypatch.setattr(api.arxiv, "get", lambda i: calls.append(i) or dict(attention))
+    monkeypatch.setattr(
+        api.arxiv,
+        "get_many",
+        lambda ids: calls.extend(ids) or [{**attention, "id": i} for i in ids],
+    )
 
     assert browser.get("/arxiv", params={"q": "attention"}).status_code == 401
     start(browser)
@@ -355,7 +359,7 @@ def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
     assert len(calls) == 2 and len(wakeups) == 1
 
     assert browser.post("/saved", json={"paper_id": "not an id"}).status_code == 422
-    monkeypatch.setattr(api.arxiv, "get", lambda i: None)
+    monkeypatch.setattr(api.arxiv, "get_many", lambda ids: [])
     assert browser.post("/saved", json={"paper_id": "2601.99999"}).status_code == 404
 
     def down(_):
@@ -365,7 +369,7 @@ def test_add_any_arxiv_paper_to_saved(api, browser, monkeypatch):
     assert browser.get("/arxiv", params={"q": "anything"}).status_code == 503
 
     # Caps that stop one session filling the database with permanent rows.
-    monkeypatch.setattr(api.arxiv, "get", lambda i: {**attention, "id": i})
+    monkeypatch.setattr(api.arxiv, "get_many", lambda ids: [{**attention, "id": i} for i in ids])
     monkeypatch.setattr(api.new_papers_daily_limit, "limit", 1)
     api.new_papers_daily_limit.counts.clear()  # the adds above counted too
     assert browser.post("/saved", json={"paper_id": "2601.00001"}).status_code == 201
@@ -386,3 +390,78 @@ def test_saves_in_a_burst_wake_the_embedder_once(api, monkeypatch):
     api.request_embedding()  # a save after the run started gets a run of its own
     api._embed_timer.join()
     assert dispatched == [1, 1]
+
+
+def test_import_own_papers_and_follow_authors(api, browser, monkeypatch):
+    import_calls = []
+    monkeypatch.setattr(api, "request_embedding", lambda: None)
+    monkeypatch.setattr(
+        api.arxiv,
+        "find_authors",
+        lambda q: [{"id": "A123", "name": q, "works": 9, "institution": None}],
+    )
+    monkeypatch.setattr(
+        api.arxiv,
+        "authored_arxiv_ids",
+        lambda **who: import_calls.append(who) or [paper(2), "2601.55555"],
+    )
+    fetched = []
+    monkeypatch.setattr(
+        api.arxiv,
+        "get_many",
+        lambda ids: fetched.extend(ids)
+        or [
+            {"id": i, "title": "My preprint", "abstract": "Mine.", "authors": ["A. Author", "Me"],
+             "categories": ["cs.IR"], "published_at": datetime(2026, 1, 5, tzinfo=UTC),
+             "tldr": None}
+            for i in ids
+        ],
+    )  # fmt: skip
+    start(browser, categories=("cs.IR",))
+
+    # Import: by name (pick yourself), or by ORCID iD. Stored papers cost no arXiv request.
+    assert browser.get("/import/authors", params={"q": "Jane Doe"}).json()[0]["id"] == "A123"
+    assert browser.get("/import/papers").status_code == 422
+    assert browser.get("/import/papers", params={"author": "Robert'); drop"}).status_code == 422
+    r = browser.get("/import/papers", params={"orcid": "https://orcid.org/0000-0002-9322-3515"})
+    assert [p["id"] for p in r.json()] == [paper(2), "2601.55555"]
+    assert import_calls[-1] == {"orcid": "0000-0002-9322-3515", "author": None, "limit": 20}
+    assert fetched == ["2601.55555"]
+
+    # Save them in one go; again is a no-op.
+    ids = [p["id"] for p in r.json()]
+    saved = browser.post("/saved/batch", json={"paper_ids": ids})
+    assert saved.status_code == 201 and all(p["new"] for p in saved.json())
+    assert not any(p["new"] for p in browser.post("/saved/batch", json={"paper_ids": ids}).json())
+    assert browser.get("/me").json()["saved"] == 2
+    assert browser.post("/saved/batch", json={"paper_ids": ["x"] * 21}).status_code == 422
+
+    # "A. Author" wrote both saved papers, so they're suggested; following moves them over.
+    suggested = browser.get("/authors").json()["suggested"]
+    assert {"name": "A. Author", "saved": 2} in suggested
+    assert browser.post("/follows", json={"author": "A. Author"}).status_code == 204
+    authors = browser.get("/authors").json()
+    assert authors["following"] == ["A. Author"]
+    assert "A. Author" not in {a["name"] for a in authors["suggested"]}
+
+    # Their new papers lead the feed (any category, not already saved), at most three,
+    # and are measured as their own ranker.
+    items = browser.get("/feed").json()["items"]
+    assert [i["followed"] for i in items[:3]] == ["A. Author"] * 3
+    assert all(i["followed"] is None for i in items[3:])
+    assert not {i["id"] for i in items} & set(ids)
+    assert "follows" in {row["ranker"] for row in browser.get("/stats").json()}
+    assert browser.get("/me/export").json()["follows"][0]["author"] == "A. Author"
+
+    # A hand-added preprint newer than the latest arXiv batch isn't "the announcement".
+    newest = datetime.now(UTC) - timedelta(minutes=5)
+    with get_pool().connection() as conn:
+        conn.execute("update papers set published_at = %s where id = '2601.55555'", (newest,))
+    api._latest = (0.0, (None, 0))  # it's cached for five minutes
+    assert browser.get("/feed").json()["latest_count"] == 40
+    assert sum(c["daily"] for c in browser.get("/config").json()["categories"]) == 40
+
+    assert browser.delete("/follows", params={"author": "A. Author"}).status_code == 204
+    assert all(i["followed"] is None for i in browser.get("/feed").json()["items"])
+    monkeypatch.setattr(api, "MAX_FOLLOWS", 0)
+    assert browser.post("/follows", json={"author": "Me"}).status_code == 409

@@ -1,4 +1,4 @@
-from xoult.arxiv import parse_atom, parse_id
+from xoult.arxiv import ARXIV_LINK, parse_atom, parse_id, parse_orcid
 
 ATOM = """<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom">
@@ -41,3 +41,14 @@ def test_parse_atom():
     assert paper["categories"] == ["cs.CL", "cs.LG"]
     assert paper["published_at"].year == 2017
     assert parse_atom(ERROR) == []
+
+
+def test_parse_orcid_and_arxiv_links_from_openalex():
+    assert parse_orcid("https://orcid.org/0000-0002-9322-3515") == "0000-0002-9322-3515"
+    assert parse_orcid("0000-0001-5109-372x") == "0000-0001-5109-372X"
+    assert parse_orcid("Yoshua Bengio") is None
+    assert ARXIV_LINK.search("https://arxiv.org/abs/2610.20922v2")[1] == "2610.20922"
+    assert ARXIV_LINK.search("https://arxiv.org/pdf/2610.20922.pdf")[1] == "2610.20922"
+    # The newest preprints carry only arXiv's DOI.
+    assert ARXIV_LINK.search("https://doi.org/10.48550/arxiv.2610.23561")[1] == "2610.23561"
+    assert ARXIV_LINK.search("https://doi.org/10.1145/3600000") is None

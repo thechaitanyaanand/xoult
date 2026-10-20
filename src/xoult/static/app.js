@@ -134,7 +134,8 @@ function entry(p, rank, { saved = false } = {}) {
     append(el("div", { className: "body" }),
       // An LLM wrote the TLDR from the abstract; say so, since it can be wrong.
       el("p", { className: "summary" }, p.tldr ? el("span", { className: "ai", textContent: "AI summary" }) : null, summary),
-      p.because ? el("p", { className: "because" }, "Because you saved ", el("cite", { textContent: p.because })) : null,
+      p.followed ? el("p", { className: "because" }, "New from ", el("cite", { textContent: p.followed }), ", whom you follow")
+        : p.because ? el("p", { className: "because" }, "Because you saved ", el("cite", { textContent: p.because })) : null,
       el("details", {}, el("summary", { textContent: "Abstract" }), el("p", { textContent: p.abstract }))),
     actions,
   );
@@ -317,6 +318,7 @@ async function renderSaved() {
       $(".dateline").textContent = savedLine(me.saved);
     }),
     copyAll,
+    authorsPanel(),
     list,
   );
 }
@@ -432,17 +434,154 @@ async function renderStats() {
 function renderStarter() {
   let added = 0;
   const next = el("button", { className: "btn primary cta", textContent: "Skip, show today's papers", onclick: () => go("#today") });
+  const count = () => {
+    added += 1;
+    next.textContent = `Show today's papers, ranked by ${added === 1 ? "this one" : `these ${added}`}`;
+  };
   view.replaceChildren(el("section", { className: "welcome" },
-    el("h1", { textContent: "Add papers you're already reading" }),
-    el("p", { textContent: "Paste arXiv links or search by title. Three to five is plenty: today's list is ranked around them, and you can always add more from the Saved tab." }),
-    addPaper(new Set(), () => {
-      added += 1;
-      next.textContent = `Show today's papers, ranked by ${added === 1 ? "this one" : `these ${added}`}`;
-    }),
+    el("h1", { textContent: "Start from papers you know" }),
+    el("p", { textContent: "If you publish, import your own papers. Otherwise paste a few you're reading; three to five is plenty. Today's list is ranked around them, and you can add more any time." }),
+    importPapers(count),
+    addPaper(new Set(), count),
     next,
   ));
-  $("#add-q").focus();
+  $("#import-q").focus();
 }
+
+// A researcher's own preprints describe their interests better than anything else.
+// Found by ORCID iD, or by name with a pick among same-named people (OpenAlex tells them
+// apart); the reader reviews the list before anything is saved.
+function importPapers(onSaved = () => {}) {
+  const input = el("input", {
+    id: "import-q", type: "search", required: true, minLength: 2, maxLength: 100, autocomplete: "off",
+    placeholder: "ORCID iD, or your name as it appears on papers",
+  });
+  const status = el("p", { className: "status", role: "status" });
+  const out = el("div", {});
+  const failed = (e) => (e.status === 503 ? "The paper index isn't answering. Try again in a minute."
+    : e.status === 429 ? "Slow down a little, then try again."
+    : e.status === 409 ? "Your library is full. Remove some papers first." : "That didn't work. Try again.");
+
+  const review = async (params) => {
+    out.replaceChildren();
+    status.textContent = "Finding your papers…";
+    let papers;
+    try { papers = await api(`/import/papers?${new URLSearchParams(params)}`); } catch (e) {
+      status.textContent = failed(e);
+      return;
+    }
+    if (!papers.length) {
+      status.textContent = "No arXiv preprints found for that. Try your name, or add papers one by one.";
+      return;
+    }
+    // The reader is the one author on every paper; remembered so they aren't suggested to
+    // themselves as someone to follow. ponytail: per device; store it if that annoys anyone.
+    const counts = {};
+    for (const p of papers) for (const a of p.authors) counts[a] = (counts[a] || 0) + 1;
+    const self = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
+    const boxes = papers.map((p) => el("input", { type: "checkbox", checked: true, value: p.id }));
+    const save = el("button", { className: "btn primary", type: "button" });
+    const label = () => {
+      const n = boxes.filter((b) => b.checked).length;
+      save.textContent = `Save ${n} paper${n === 1 ? "" : "s"}`;
+      save.disabled = !n;
+    };
+    for (const b of boxes) b.onchange = label;
+    label();
+    save.onclick = async () => {
+      save.disabled = true;
+      try {
+        const ids = boxes.filter((b) => b.checked).map((b) => b.value);
+        const saved = await api("/saved/batch", { method: "POST", body: JSON.stringify({ paper_ids: ids }) });
+        const fresh = saved.filter((p) => p.new);
+        prefs.set("self", self);
+        if (fresh.length) setSavedCount(me.saved + fresh.length);
+        fresh.forEach((p) => onSaved(p));
+        status.textContent = `Saved ${fresh.length} of your papers. They shape your ranking within a few minutes.`;
+        say(status.textContent);
+        out.replaceChildren();
+      } catch (e) {
+        save.disabled = false;
+        status.textContent = failed(e);
+      }
+    };
+    status.textContent = `Your ${papers.length} most recent arXiv preprints. Untick any that aren't yours.`;
+    out.replaceChildren(
+      el("ul", { className: "picks" }, ...papers.map((p, i) => el("li", {}, el("label", {}, boxes[i], ` ${p.title}`,
+        el("span", { className: "byline", textContent: `  ${new Date(p.published_at).getFullYear()}` }))))),
+      save,
+    );
+  };
+
+  const form = el("form", { className: "add" },
+    el("label", { htmlFor: "import-q", textContent: "Import your own papers" }),
+    el("div", { className: "row" }, input, el("button", { className: "btn", textContent: "Find" })),
+    status, out);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const q = input.value.trim();
+    if (/\d{4}-\d{4}-\d{4}-\d{3}[\dXx]/.test(q)) return review({ orcid: q });
+    out.replaceChildren();
+    status.textContent = "Looking you up…";
+    let people;
+    try { people = await api(`/import/authors?${new URLSearchParams({ q })}`); } catch (err) {
+      status.textContent = failed(err);
+      return;
+    }
+    if (!people.length) {
+      status.textContent = "Nobody by that name in the paper index. Try your ORCID iD.";
+      return;
+    }
+    status.textContent = "Which of these is you?";
+    out.replaceChildren(el("ul", { className: "picks" }, ...people.map((a) => el("li", {},
+      el("button", { className: "link", type: "button", textContent: a.name, onclick: () => review({ author: a.id }) }),
+      el("span", { className: "byline", textContent: `  ${a.works} work${a.works === 1 ? "" : "s"}${a.institution ? `, ${a.institution}` : ""}` })))));
+  };
+  return form;
+}
+
+// Authors who keep turning up in your library, and the ones you follow. Following is
+// private: nobody else ever sees who you follow.
+function authorsPanel() {
+  const box = el("section", { className: "authors", hidden: true });
+  api("/authors").then(({ following, suggested }) => {
+    const self = prefs.get("self");
+    const people = [
+      ...following.map((name) => ({ name, on: true })),
+      ...suggested.filter((a) => a.name !== self).map((a) => ({ ...a, on: false })),
+    ];
+    if (!people.length) return;
+    const toggle = (a, button) => async () => {
+      button.disabled = true;
+      try {
+        if (a.on) await untrackAuthor(a.name);
+        else await api("/follows", { method: "POST", body: JSON.stringify({ author: a.name }) });
+        a.on = !a.on;
+        todayCache = null;  // Today's list changes with who you follow
+        say(a.on ? `Following ${a.name}` : `Unfollowed ${a.name}`);
+      } catch (e) {
+        say(e.status === 409 ? "You follow as many authors as xoult allows." : "That didn't work. Try again.");
+      }
+      button.disabled = false;
+      button.textContent = a.on ? "Following" : "Follow";
+      button.classList.toggle("primary", !a.on);
+    };
+    box.append(
+      el("h2", { textContent: "Authors in your library" }),
+      el("p", { className: "status", textContent: "Follow someone and their new papers lead your Today list. Only you can see who you follow." }),
+      el("ul", {}, ...people.map((a) => {
+        const button = el("button", { className: a.on ? "btn" : "btn primary", type: "button", textContent: a.on ? "Following" : "Follow" });
+        button.onclick = toggle(a, button);
+        return el("li", {}, el("span", { textContent: a.name }),
+          a.saved ? el("span", { className: "byline", textContent: ` in ${a.saved} of your papers` }) : null, button);
+      })),
+    );
+    box.hidden = false;
+  }).catch(() => {});
+  return box;
+}
+
+const untrackAuthor = (name) => api(`/follows?${new URLSearchParams({ author: name })}`, { method: "DELETE" });
 
 function categoryForm(selected, label, onSubmit) {
   const form = el("form", {},
@@ -544,7 +683,8 @@ function renderSettings() {
     ),
   );
 
-  view.replaceChildren(el("div", { className: "settings" }, account, categories, layout, data));
+  const papers = el("section", {}, el("h2", { textContent: "Your papers" }), importPapers());
+  view.replaceChildren(el("div", { className: "settings" }, account, categories, papers, layout, data));
 }
 
 /* ---------- Routing and keyboard ---------- */

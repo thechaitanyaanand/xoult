@@ -1,7 +1,7 @@
 <!-- Body of /privacy, inserted into papers.html by api.py. Keep it true: if what the code
      stores, where it runs, or who processes data changes, change this page with it. -->
 <h1>Privacy</h1>
-<p class="lede">Last updated 20 October 2026</p>
+<p class="lede">Last updated 21 October 2026</p>
 
 <p>xoult is a free feed of new arXiv papers, ranked for each reader. It is built to need
 as little about you as possible. This page says exactly what it keeps, why, and how to
@@ -12,6 +12,7 @@ remove it.</p>
   <li>The arXiv categories you pick.</li>
   <li>Which papers you were shown, opened, saved or marked "not for me", with the time and
     the version of the ranking that showed them.</li>
+  <li>The authors you follow, if any. Nobody else can see them.</li>
   <li>When you last visited, so inactive anonymous profiles can be deleted.</li>
   <li>If you sign in with Google: your Google account id and your email address. The email
     is shown only on your Settings page.</li>
@@ -45,6 +46,10 @@ local storage; it never leaves your device.</p>
   <li><strong>Sentry</strong> receives error reports, with personal data turned off.</li>
   <li>The AI services that write paper summaries receive only paper titles and abstracts,
     never anything about readers.</li>
+  <li>When you import your own papers, the ORCID iD or name you type is sent to
+    <strong>OpenAlex</strong>, an open index of research papers, to find them, and the papers
+    are fetched from <strong>arXiv</strong>. Both requests come from xoult's server, not your
+    browser, and the iD or name isn't stored.</li>
 </ul>
 
 <h2>How long it is kept</h2>

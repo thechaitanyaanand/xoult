@@ -30,6 +30,9 @@ GitHub Actions cron (weekdays)                        Render (free web service)
   names that embeddings blur. New readers get the newest papers in their categories.
 - **Explanations**: each recommendation names the saved paper it is closest to ("because
   you saved X"), since an averaged profile can't say why on its own.
+- **Your own papers and authors**: researchers import their preprints by ORCID iD or name
+  (via OpenAlex), so the feed fits their work on day one; authors who recur in a library
+  can be followed, and their new papers lead the feed.
 - **Feedback loop**: every impression, click, save and dismiss is logged with the ranker
   version that produced it, so ranking changes can be compared on live save rate
   (`GET /stats`).

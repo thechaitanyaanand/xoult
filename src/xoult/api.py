@@ -4,6 +4,7 @@ import threading
 import time
 import urllib.request
 from collections import Counter
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 from html import escape
 from pathlib import Path
@@ -23,7 +24,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from xoult import arxiv, rank
 from xoult.config import DEV_SECRET, settings
-from xoult.db import get_pool
+from xoult.db import apply_schema, get_pool
 
 if settings.cookie_secure and (settings.secret_key == DEV_SECRET or len(settings.secret_key) < 32):
     # A known or guessable key would let anyone forge a session for any user id.
@@ -65,7 +66,17 @@ PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config", 
 docs = (
     {} if not settings.cookie_secure else {"docs_url": None, "redoc_url": None, "openapi_url": None}
 )
-app = FastAPI(title="xoult", **docs)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # db/schema.sql is idempotent. Applying it here too, not only in the ingest job, means
+    # a deploy that adds a table can't serve code querying it before the table exists.
+    apply_schema()
+    yield
+
+
+app = FastAPI(title="xoult", lifespan=lifespan, **docs)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.secret_key,
@@ -143,11 +154,13 @@ arxiv_limit = RateLimit(10)
 arxiv_global_limit = RateLimit(20, per_ip=False)
 # Saved papers are never pruned, so hand-added ones are permanent rows. Without a cap,
 # one session could fill the free 500 MB database (where every write fails) in days:
-# 500 a day is ~3 MB, while real readers add a handful each.
+# 1,500 a day is ~9 MB, months of headroom; a researcher's import brings ~20 at once.
 # ponytail: counted in memory, so a restart resets it; it bounds a day of abuse, not a
 # week. Count `papers.ingested_at` of hand-added rows in SQL if that ever matters.
-new_papers_daily_limit = RateLimit(500, seconds=86400, per_ip=False)
+new_papers_daily_limit = RateLimit(1500, seconds=86400, per_ip=False)
 MAX_SAVED = 1000
+MAX_FOLLOWS = 200
+IMPORT_SIZE = 20  # someone's most recent preprints: enough to describe their work
 LIMITS = (
     signup_limit,
     signup_global_limit,
@@ -175,6 +188,16 @@ class AddPaper(BaseModel):
     paper_id: str = Field(max_length=300)  # an id or a pasted link
 
 
+class AddPapers(BaseModel):
+    paper_ids: list[Annotated[str, StringConstraints(max_length=40)]] = Field(
+        min_length=1, max_length=IMPORT_SIZE
+    )
+
+
+class Follow(BaseModel):
+    author: str = Field(min_length=1, max_length=200)
+
+
 class GoogleCredential(BaseModel):
     credential: str = Field(max_length=4096)
 
@@ -191,6 +214,7 @@ class Paper(BaseModel):
 
 class FeedItem(Paper):
     because: str | None = None
+    followed: str | None = None  # set on picks shown because their author is followed
 
 
 class SavedPaper(Paper):
@@ -255,6 +279,16 @@ def robots(request: Request) -> PlainTextResponse:
     )
 
 
+# arXiv announces a batch under one timestamp, hundreds of papers each weekday. Papers
+# readers add by hand carry their own submission times, so "the newest timestamp" alone
+# could be a single hand-added preprint; a batch is a timestamp many papers share.
+BATCH = 5
+LATEST_BATCH = (
+    "(select published_at from papers group by published_at "
+    f"having count(*) > {BATCH} order by published_at desc limit 1)"
+)
+
+
 def _days(conn, category: str) -> list[date]:
     """Announcement days still worth a page for a category, newest first.
 
@@ -264,9 +298,9 @@ def _days(conn, category: str) -> list[date]:
     return [
         d
         for (d,) in conn.execute(
-            "select distinct (published_at at time zone 'UTC')::date from papers "
+            "select (published_at at time zone 'UTC')::date from papers "
             "where %s = any(categories) and published_at > now() - make_interval(days => %s) "
-            "order by 1 desc",
+            f"group by 1 having count(*) > {BATCH} order by 1 desc",
             (category, settings.keep_papers_days),
         ).fetchall()
     ]
@@ -443,7 +477,7 @@ def config(request: Request) -> dict:
         counts = dict(
             conn.execute(
                 "select c, count(*) from papers, unnest(categories) c "
-                "where published_at = (select max(published_at) from papers) group by c"
+                f"where published_at = {LATEST_BATCH} group by c"
             ).fetchall()
         )
     return {
@@ -559,8 +593,13 @@ def export_me(user: Me) -> JSONResponse:
             "where e.user_id = %s order by e.created_at",
             (user.id,),
         ).fetchall()
+        follows = conn.execute(
+            "select author, created_at from follows where user_id = %s order by created_at",
+            (user.id,),
+        ).fetchall()
     data = {
         "user": {**user.model_dump(mode="json"), "created_at": created.isoformat()},
+        "follows": [{"author": a, "at": at.isoformat()} for a, at in follows],
         "events": [
             {"kind": k, "paper_id": pid, "title": t, "ranker": r, "at": at.isoformat()}
             for k, pid, t, r, at in events
@@ -586,8 +625,8 @@ def _latest_announcement(conn) -> tuple:
     expires, value = _latest
     if time.monotonic() > expires:
         value = conn.execute(
-            "select published_at, count(*) from papers "
-            "group by published_at order by published_at desc limit 1"
+            f"select published_at, count(*) from papers where published_at = {LATEST_BATCH} "
+            "group by published_at"
         ).fetchone() or (None, 0)
         _latest = (time.monotonic() + 300, value)
     return value
@@ -598,10 +637,16 @@ def get_feed(user: Me, limit: Annotated[int, Query(ge=1, le=50)] = 20) -> Feed:
     with get_pool().connection() as conn:
         items = rank.feed(conn, user.id, user.categories, limit)
         # One statement for all impressions: executemany would be a round trip per row.
+        # Picks shown for a followed author log as their own ranker, so /stats compares
+        # their save rate with the regular ranking's directly.
         conn.execute(
             "insert into events (user_id, paper_id, kind, ranker) "
-            "select %s, unnest(%s::text[]), 'impression', %s",
-            (user.id, [item.id for item in items], rank.RANKER),
+            "select %s, i, 'impression', r from unnest(%s::text[], %s::text[]) as t(i, r)",
+            (
+                user.id,
+                [item.id for item in items],
+                [rank.FOLLOWS if item.followed else rank.RANKER for item in items],
+            ),
         )
         latest = _latest_announcement(conn)
     return Feed(
@@ -686,60 +731,166 @@ def search_arxiv(user: Me, q: Annotated[str, Query(min_length=2, max_length=300)
         raise HTTPException(503, ARXIV_DOWN) from None
 
 
-@app.post("/saved", status_code=201, dependencies=[Depends(write_limit)])
-def add_saved(body: AddPaper, user: Me, request: Request) -> SavedPaper:
-    """Save any arXiv paper, not just one from the feed, fetching it if it's new here.
+def _save(user: User, request: Request, paper_ids: list[str]) -> list[SavedPaper]:
+    """Save arXiv papers, fetching any that are new here in one arXiv request.
 
     A paper new to the database has no embedding yet, so this wakes the ingest job to
-    embed it; it shapes the feed a few minutes later.
+    embed it; it shapes the feed a few minutes later. Papers arXiv doesn't know are
+    skipped.
     """
-    paper_id = arxiv.parse_id(body.paper_id)
-    if not paper_id:
-        raise HTTPException(422, "Not an arXiv id")
     with get_pool().connection() as conn:
         (saved,) = conn.execute(
             "select count(distinct paper_id) from events where user_id = %s and kind = 'save'",
             (user.id,),
         ).fetchone()
-        if saved >= MAX_SAVED:
+        if saved + len(paper_ids) > MAX_SAVED:
             raise HTTPException(
                 409, f"Your library is full ({MAX_SAVED} papers). Remove some first."
             )
-        row = conn.execute(
+        rows = conn.execute(
             "select id, title, tldr, abstract, authors, categories, published_at "
-            "from papers where id = %s",
-            (paper_id,),
-        ).fetchone()
-    if row:
-        paper = Paper(**dict(zip(Paper.model_fields, row, strict=True)))
-    else:
-        # Only papers that aren't stored yet cost an arXiv request, so they share its limit.
-        for limit in (arxiv_limit, arxiv_global_limit, new_papers_daily_limit):
+            "from papers where id = any(%s)",
+            (paper_ids,),
+        ).fetchall()
+    papers = {r[0]: Paper(**dict(zip(Paper.model_fields, r, strict=True))) for r in rows}
+    missing = [i for i in paper_ids if i not in papers]
+    if missing:
+        # Only papers that aren't stored yet cost an arXiv request, so they share its
+        # limits, and each one counts toward the daily cap on new rows.
+        for limit in (arxiv_limit, arxiv_global_limit, *[new_papers_daily_limit] * len(missing)):
             limit(request)
         try:
-            found = arxiv.get(paper_id)
+            papers |= {p["id"]: Paper(**p) for p in arxiv.get_many(missing)}
         except arxiv.Unavailable:
             raise HTTPException(503, ARXIV_DOWN) from None
-        if not found:
-            raise HTTPException(404, "No arXiv paper with that id")
-        paper = Paper(**found)
+    found = [papers[i] for i in paper_ids if i in papers]
+    if not found:
+        raise HTTPException(404, "No arXiv paper with that id")
+
+    out = []
     with get_pool().connection() as conn, conn.transaction():
-        conn.execute(
-            "insert into papers (id, title, abstract, authors, categories, published_at) "
-            "values (%s, %s, %s, %s, %s, %s) on conflict (id) do nothing",
-            (paper.id, paper.title, paper.abstract, paper.authors, paper.categories,
-             paper.published_at),
-        )  # fmt: skip
-        # Idempotent: the search box on Today can't know what's already saved.
-        new = conn.execute(
-            "insert into events (user_id, paper_id, kind) select %(user)s, %(paper)s, 'save' "
-            "where not exists (select 1 from events where user_id = %(user)s "
-            "and paper_id = %(paper)s and kind = 'save')",
-            {"user": user.id, "paper": paper.id},
-        ).rowcount
-    if not row:
+        for paper in found:
+            if paper.id in missing:
+                conn.execute(
+                    "insert into papers (id, title, abstract, authors, categories, "
+                    "published_at) values (%s, %s, %s, %s, %s, %s) on conflict (id) do nothing",
+                    (paper.id, paper.title, paper.abstract, paper.authors, paper.categories,
+                     paper.published_at),
+                )  # fmt: skip
+            # Idempotent: the search box on Today can't know what's already saved.
+            new = conn.execute(
+                "insert into events (user_id, paper_id, kind) "
+                "select %(user)s, %(paper)s, 'save' where not exists (select 1 from events "
+                "where user_id = %(user)s and paper_id = %(paper)s and kind = 'save')",
+                {"user": user.id, "paper": paper.id},
+            ).rowcount
+            out.append(SavedPaper(**paper.model_dump(), new=bool(new)))
+    if set(missing) & {p.id for p in found}:
         request_embedding()
-    return SavedPaper(**paper.model_dump(), new=bool(new))
+    return out
+
+
+@app.post("/saved", status_code=201, dependencies=[Depends(write_limit)])
+def add_saved(body: AddPaper, user: Me, request: Request) -> SavedPaper:
+    """Save any arXiv paper, not just one from the feed."""
+    paper_id = arxiv.parse_id(body.paper_id)
+    if not paper_id:
+        raise HTTPException(422, "Not an arXiv id")
+    return _save(user, request, [paper_id])[0]
+
+
+@app.post("/saved/batch", status_code=201, dependencies=[Depends(write_limit)])
+def add_saved_batch(body: AddPapers, user: Me, request: Request) -> list[SavedPaper]:
+    """Save several papers at once, e.g. a researcher's own from an import."""
+    ids = list(dict.fromkeys(filter(None, map(arxiv.parse_id, body.paper_ids))))
+    if not ids:
+        raise HTTPException(422, "No arXiv ids")
+    return _save(user, request, ids)
+
+
+INDEX_DOWN = "The paper index isn't answering. Try again in a minute."
+
+
+# A researcher's own papers are the best description of their interests, and seed the
+# feed on day one. Looked up by ORCID iD, or by name with the reader picking themselves
+# among same-named authors. Nothing about the reader is stored or sent: only what they
+# typed, from this server.
+@app.get("/import/authors", dependencies=ArxivLimits)
+def import_authors(user: Me, q: Annotated[str, Query(min_length=2, max_length=100)]) -> list[dict]:
+    try:
+        return arxiv.find_authors(q)
+    except arxiv.Unavailable:
+        raise HTTPException(503, INDEX_DOWN) from None
+
+
+@app.get("/import/papers", dependencies=ArxivLimits)
+def import_papers(
+    user: Me,
+    orcid: Annotated[str | None, Query(max_length=60)] = None,
+    author: Annotated[str | None, Query(pattern=r"^A\d{1,12}$")] = None,
+) -> list[Paper]:
+    """Someone's most recent arXiv preprints, to review before saving."""
+    orcid = orcid and arxiv.parse_orcid(orcid)
+    if not orcid and not author:
+        raise HTTPException(422, "Give an ORCID iD or an author")
+    try:
+        ids = arxiv.authored_arxiv_ids(orcid=orcid, author=author, limit=IMPORT_SIZE)
+        with get_pool().connection() as conn:
+            rows = conn.execute(
+                "select id, title, tldr, abstract, authors, categories, published_at "
+                "from papers where id = any(%s)",
+                (ids,),
+            ).fetchall()
+        papers = {r[0]: Paper(**dict(zip(Paper.model_fields, r, strict=True))) for r in rows}
+        papers |= {p["id"]: Paper(**p) for p in arxiv.get_many([i for i in ids if i not in papers])}
+    except arxiv.Unavailable:
+        raise HTTPException(503, INDEX_DOWN) from None
+    return [papers[i] for i in ids if i in papers]
+
+
+@app.get("/authors", dependencies=[Depends(read_limit)])
+def authors(user: Me) -> dict:
+    """Authors you follow, and ones worth following: in two or more of your saved papers."""
+    with get_pool().connection() as conn:
+        following = [
+            a for (a,) in conn.execute(
+                "select author from follows where user_id = %s order by created_at", (user.id,)
+            ).fetchall()
+        ]  # fmt: skip
+        suggested = conn.execute(
+            """
+            select a, count(distinct p.id) from events e
+            join papers p on p.id = e.paper_id, unnest(p.authors) a
+            where e.user_id = %s and e.kind = 'save'
+            group by a having count(distinct p.id) >= 2
+            order by 2 desc, a limit 12
+            """,
+            (user.id,),
+        ).fetchall()
+    return {
+        "following": following,
+        "suggested": [{"name": a, "saved": n} for a, n in suggested if a not in following],
+    }
+
+
+@app.post("/follows", status_code=204, dependencies=[Depends(write_limit)])
+def follow(body: Follow, user: Me) -> None:
+    with get_pool().connection() as conn:
+        (n,) = conn.execute(
+            "select count(*) from follows where user_id = %s", (user.id,)
+        ).fetchone()
+        if n >= MAX_FOLLOWS:
+            raise HTTPException(409, f"You follow {MAX_FOLLOWS} authors already.")
+        conn.execute(
+            "insert into follows (user_id, author) values (%s, %s) on conflict do nothing",
+            (user.id, body.author),
+        )
+
+
+@app.delete("/follows", status_code=204, dependencies=[Depends(write_limit)])
+def unfollow(user: Me, author: Annotated[str, Query(max_length=200)]) -> None:
+    with get_pool().connection() as conn:
+        conn.execute("delete from follows where user_id = %s and author = %s", (user.id, author))
 
 
 @app.post("/events", status_code=204, dependencies=[Depends(write_limit)])

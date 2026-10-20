@@ -216,6 +216,32 @@ carries no model.
   `LISTEN/NOTIFY`. The queue (the null column) and the job (`embed_missing`) stay as
   they are; only the thing that runs it changes.
 
+## Researchers' own papers and followed authors
+
+- **Import by ORCID iD or name.** A researcher's own preprints describe their interests
+  better than anything they could paste. ORCID records mostly hold publisher DOIs (one
+  test record: 20 works, none linked to arXiv), so the lookup goes through OpenAlex,
+  which links ORCID iDs and disambiguated authors to every copy of a work (the same
+  person: 692 arXiv preprints). By name, the reader picks themselves among same-named
+  authors. The 20 most recent are shown for review, then saved in one batch with one
+  arXiv request. Nothing about the reader is stored; the request comes from the server.
+- **Follows** are private rows (`follows`), exported and deleted with the account.
+  Suggestions are authors in two or more of your saved papers. Up to three of a
+  followed author's new papers lead the feed from any category, and their impressions
+  log as ranker `follows`, so `/stats` compares their save rate with the main ranking
+  directly. Names are matched as arXiv prints them, so two people sharing a name share
+  a follow; OpenAlex author ids would fix that if it matters.
+- **Why not people-matching between readers:** it needs a few thousand active readers
+  per niche before anyone gets a useful match, contradicts the privacy page, and needs
+  moderation a one-person project can't staff. Authors publish to be read; readers
+  didn't sign up to be found.
+- **Batches vs hand-added papers.** "Latest announcement" is the newest timestamp more
+  than five papers share: arXiv announces hundreds under one, while hand-added
+  preprints carry their own submission times and would otherwise pass for a new batch.
+- **Schema on startup.** The API applies the idempotent `db/schema.sql` when it starts,
+  so a deploy that adds a table can't serve code that queries it before the ingest job
+  next runs.
+
 ## Scale: what we don't run, and when we would
 
 Each item has a measured trigger and a migration path that the current design keeps
