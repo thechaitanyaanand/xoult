@@ -138,6 +138,17 @@
           text-underline-offset: 3px; font: inherit; }
   .link:hover { color: var(--ink); }
   .note { color: var(--muted); }
+  /* Folders: a row of filters above the saved list, and a picker on each paper */
+  .folders-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin: 0 0 1.5rem;
+                 font: 0.8125rem/1.5 var(--sans); }
+  .folders-bar .btn[aria-pressed="true"] { border-color: var(--ink); background: var(--accent-wash); }
+  .folders-bar input { padding: 0.4rem 0.6rem; border: 1px solid var(--rule); border-radius: 4px;
+                       background: transparent; color: inherit; font: inherit; }
+  .folder-tools { display: flex; flex-wrap: wrap; gap: 0 1rem; flex-basis: 100%; }
+  details.folders { margin-top: 0; }
+  details.folders[open] { flex-basis: 100%; order: 1; }  /* opened, it gets its own row */
+  details.folders label { display: block; padding: 0.3rem 0; cursor: pointer; }
+  details.folders .status { margin: 0.3rem 0 0; font-size: 0.8125rem; }
 
   /* Triage marks: a tick in the margin, or the entry struck off the list */
   .paper[data-state="saved"] .mark { color: var(--accent); font: 600 1.15rem/1.3 var(--serif); }
@@ -248,8 +259,8 @@
     <noscript>
       <section class="welcome">
         <h1>A short list from today's arXiv</h1>
-        <p>xoult ranks the roughly 1,900 machine learning papers announced on arXiv each
-          weekday (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV and stat.ML) for each reader, from the
+        <p>xoult ranks the roughly 1,900 machine learning and HCI papers announced on arXiv
+          each weekday (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV, stat.ML and cs.HC) for each reader, from the
           papers they save and dismiss, and gives every paper a one-line TLDR.</p>
         <p>It needs JavaScript to run. A plain-text summary is at <a href="/llms.txt">/llms.txt</a>.</p>
       </section>
@@ -260,9 +271,11 @@
   <footer class="footer hint">Every new paper, by category:
     <a href="/papers/cs.CL">cs.CL</a> · <a href="/papers/cs.IR">cs.IR</a> ·
     <a href="/papers/cs.LG">cs.LG</a> · <a href="/papers/cs.AI">cs.AI</a> ·
-    <a href="/papers/cs.CV">cs.CV</a> · <a href="/papers/stat.ML">stat.ML</a>
+    <a href="/papers/cs.CV">cs.CV</a> · <a href="/papers/stat.ML">stat.ML</a> ·
+    <a href="/papers/cs.HC">cs.HC</a>
     · <a href="#stats">Ranking stats</a> · <a href="/privacy">Privacy</a>
     <br>Thank you to arXiv for use of its open access interoperability.
+    Upvotes and code links from Hugging Face.
   </footer>
 </main>
 <script src="/static/app.js" defer></script>

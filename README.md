@@ -1,7 +1,7 @@
 # xoult
 
-A personalized daily arXiv feed. Every weekday it pulls the new announcements in six
-ML categories (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV, stat.ML: about 1,900 papers), embeds
+A personalized daily arXiv feed. Every weekday it pulls the new announcements in seven
+ML and HCI categories (cs.CL, cs.IR, cs.LG, cs.AI, cs.CV, stat.ML, cs.HC: about 1,900 papers), embeds
 them, writes one-line TLDRs, and ranks them per reader from what they save and dismiss.
 
 It's a small recommender system with LLM augmentation, run entirely on free tiers.

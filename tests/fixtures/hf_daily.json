@@ -1,0 +1,29 @@
+[
+  {
+    "paper": {
+      "id": "2611.04277",
+      "title": "Harness-S: Learning from Sibling Harnesses for Generalizable Agent Training",
+      "upvotes": 54,
+      "githubRepo": "https://github.com/DeepExperience/Harness-S",
+      "publishedAt": "2026-11-03T00:00:00.000Z"
+    }
+  },
+  {
+    "paper": {
+      "id": "2611.08449",
+      "title": "VFlash: Fast, Accurate Visual Planning via Flash Primitive Decoding",
+      "upvotes": 88,
+      "projectPage": "https://research.nvidia.com/labs/lpr/vflash/",
+      "publishedAt": "2026-11-05T00:00:00.000Z"
+    }
+  },
+  {
+    "paper": {
+      "id": "2611.99999",
+      "title": "Harness-S: Learning from Sibling Harnesses for Generalizable Agent Training",
+      "upvotes": 3,
+      "githubRepo": "javascript:alert(1)",
+      "publishedAt": "2026-11-03T00:00:00.000Z"
+    }
+  }
+]

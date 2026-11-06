@@ -1,5 +1,6 @@
 import json
 import logging
+import secrets
 import threading
 import time
 import urllib.request
@@ -14,6 +15,7 @@ from uuid import UUID
 import psycopg
 import sentry_sdk
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Path as PathParam
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -24,7 +26,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from xoult import arxiv, rank
 from xoult.config import DEV_SECRET, settings
-from xoult.db import apply_schema, get_pool
+from xoult.db import BATCH, LATEST_BATCH, apply_schema, get_pool
 
 if settings.cookie_secure and (settings.secret_key == DEV_SECRET or len(settings.secret_key) < 32):
     # A known or guessable key would let anyone forge a session for any user id.
@@ -39,6 +41,7 @@ CATEGORY_NAMES = {
     "cs.AI": "Artificial Intelligence",
     "cs.CL": "Computation and Language",
     "cs.CV": "Computer Vision",
+    "cs.HC": "Human-Computer Interaction",
     "cs.IR": "Information Retrieval",
     "cs.LG": "Machine Learning",
     "stat.ML": "Machine Learning (Statistics)",
@@ -60,7 +63,9 @@ CSP = "; ".join(
     ]
 )
 
-PERSONAL = ("/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config", "/arxiv")
+PERSONAL = (
+    "/feed", "/saved", "/me", "/events", "/users", "/auth/", "/config", "/arxiv", "/folders"
+)  # fmt: skip
 
 # The interactive API docs are for local development; production doesn't advertise its API.
 docs = (
@@ -160,6 +165,7 @@ arxiv_global_limit = RateLimit(20, per_ip=False)
 new_papers_daily_limit = RateLimit(1500, seconds=86400, per_ip=False)
 MAX_SAVED = 1000
 MAX_FOLLOWS = 200
+MAX_FOLDERS = 50
 IMPORT_SIZE = 20  # someone's most recent preprints: enough to describe their work
 LIMITS = (
     signup_limit,
@@ -198,6 +204,10 @@ class Follow(BaseModel):
     author: str = Field(min_length=1, max_length=200)
 
 
+class FolderName(BaseModel):
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=60)]
+
+
 class GoogleCredential(BaseModel):
     credential: str = Field(max_length=4096)
 
@@ -210,6 +220,8 @@ class Paper(BaseModel):
     authors: list[str]
     categories: list[str]
     published_at: datetime
+    hf_upvotes: int | None = None  # from Hugging Face, for papers it listed
+    code_url: str | None = None
 
 
 class FeedItem(Paper):
@@ -279,16 +291,6 @@ def robots(request: Request) -> PlainTextResponse:
     )
 
 
-# arXiv announces a batch under one timestamp, hundreds of papers each weekday. Papers
-# readers add by hand carry their own submission times, so "the newest timestamp" alone
-# could be a single hand-added preprint; a batch is a timestamp many papers share.
-BATCH = 5
-LATEST_BATCH = (
-    "(select published_at from papers group by published_at "
-    f"having count(*) > {BATCH} order by published_at desc limit 1)"
-)
-
-
 def _days(conn, category: str) -> list[date]:
     """Announcement days still worth a page for a category, newest first.
 
@@ -352,7 +354,7 @@ def papers_page(request: Request, category: str, day: date | None = None) -> HTM
         if shown not in days:
             raise HTTPException(404, "No papers for that day")
         rows = conn.execute(
-            "select id, title, tldr, abstract, authors from papers "
+            "select id, title, tldr, abstract, authors, hf_upvotes, code_url from papers "
             "where %s = any(categories) and (published_at at time zone 'UTC')::date = %s "
             "order by id",
             (category, shown),
@@ -365,17 +367,7 @@ def papers_page(request: Request, category: str, day: date | None = None) -> HTM
         f"All {len(rows)} new arXiv {category} ({name}) papers announced on {when}, "
         "each with a one-line TLDR."
     )
-    items = []
-    for pid, ptitle, tldr, abstract, authors in rows:
-        summary = tldr or (
-            abstract[:280].rsplit(" ", 1)[0] + "…" if len(abstract) > 280 else abstract
-        )
-        byline = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
-        items.append(
-            f'<li><h2><a href="https://arxiv.org/abs/{escape(pid)}">{escape(ptitle)}</a></h2>'
-            f'<p class="meta">{escape(byline)} · arXiv:{escape(pid)}</p>'
-            f"<p>{AI_LABEL if tldr else ''}{escape(summary)}</p></li>"
-        )
+    items = [_paper_li(*row) for row in rows]
     others = " ".join(
         f'<a href="/papers/{c}">{c}</a>' for c in settings.arxiv_categories if c != category
     )
@@ -394,7 +386,41 @@ def papers_page(request: Request, category: str, day: date | None = None) -> HTM
     return _page(origin, path, title, description, body)  # body escaped piece by piece above
 
 
-def _page(origin: str, path: str, title: str, description: str, body: str) -> HTMLResponse:
+def _paper_li(
+    pid: str,
+    title: str,
+    tldr: str | None,
+    abstract: str,
+    authors: list[str],
+    hf_upvotes: int | None = None,
+    code_url: str | None = None,
+) -> str:
+    """One paper as an escaped <li>, for the daily pages and shared folders."""
+    summary = tldr or (abstract[:280].rsplit(" ", 1)[0] + "…" if len(abstract) > 280 else abstract)
+    byline = ", ".join(authors[:3]) + (" et al." if len(authors) > 3 else "")
+    extra = ""
+    if hf_upvotes:
+        hf = f"https://huggingface.co/papers/{escape(pid)}"
+        extra += f' · <a href="{hf}">▲ {hf_upvotes} on Hugging Face</a>'
+    if code_url and code_url.startswith("https://"):
+        extra += f' · <a href="{escape(code_url)}" rel="noopener noreferrer">Code</a>'
+    return (
+        f'<li><h2><a href="https://arxiv.org/abs/{escape(pid)}">{escape(title)}</a></h2>'
+        f'<p class="meta">{escape(byline)} · arXiv:{escape(pid)}{extra}</p>'
+        f"<p>{AI_LABEL if tldr else ''}{escape(summary)}</p></li>"
+    )
+
+
+def _page(
+    origin: str,
+    path: str,
+    title: str,
+    description: str,
+    body: str,
+    *,
+    robots: bool = True,
+    cache: str = "public, max-age=3600",
+) -> HTMLResponse:
     """A plain server-rendered page in the papers.html shell. `body` must be safe HTML."""
     page = (STATIC / "papers.html").read_text(encoding="utf-8")
     for key, value in {
@@ -402,10 +428,43 @@ def _page(origin: str, path: str, title: str, description: str, body: str) -> HT
         "description": escape(description),
         "canonical": origin + path,
         "origin": origin,
+        "robots": "" if robots else '<meta name="robots" content="noindex">\n',
         "body": body,
     }.items():
         page = page.replace("{{" + key + "}}", value)
-    return HTMLResponse(page, headers={"Cache-Control": "public, max-age=3600"})
+    return HTMLResponse(page, headers={"Cache-Control": cache})
+
+
+@app.get("/f/{share_id}", include_in_schema=False, dependencies=[Depends(read_limit)])
+def shared_folder(request: Request, share_id: Annotated[str, PathParam(max_length=32)]):
+    """A folder someone shared: its name and papers, nothing about who made it.
+
+    Unlisted, not published: noindex and left out of the sitemap. Not cached, so
+    turning sharing off kills the link at once, Cloudflare included.
+    """
+    with get_pool().connection() as conn:
+        folder = conn.execute("select id, name from folders where share_id = %s", (share_id,))
+        folder = folder.fetchone()
+        if not folder:
+            raise HTTPException(404, "This folder isn't shared, or the link was turned off.")
+        rows = conn.execute(
+            "select p.id, p.title, p.tldr, p.abstract, p.authors, p.hf_upvotes, p.code_url "
+            "from folder_papers fp "
+            "join papers p on p.id = fp.paper_id where fp.folder_id = %s order by fp.added_at",
+            (folder[0],),
+        ).fetchall()
+    name, n = folder[1], len(rows)
+    body = (
+        f"<h1>{escape(name)}</h1>"
+        f'<p class="lede">{n} paper{"" if n == 1 else "s"}, shared from xoult. '
+        '<a class="cta" href="/">Get today’s arXiv ranked for you, free →</a></p>'
+        f"<ol>{''.join(_paper_li(*r) for r in rows)}</ol>"
+    )
+    description = f"{n} arXiv papers in the folder “{name}”, shared from xoult."
+    return _page(
+        _origin(request), f"/f/{share_id}", f"{name} | xoult", description, body,
+        robots=False, cache="no-store",
+    )  # fmt: skip
 
 
 @app.get("/privacy", include_in_schema=False)
@@ -432,7 +491,8 @@ def llms_txt(request: Request) -> PlainTextResponse:
     origin = _origin(request)
     text = f"""# xoult
 
-> A free, personalized daily feed of new arXiv papers in machine learning. Each weekday it
+> A free, personalized daily feed of new arXiv papers in machine learning
+> and HCI. Each weekday it
 > ranks the new announcements for every reader from what they save and dismiss, and gives
 > each paper a one-line TLDR.
 
@@ -536,6 +596,30 @@ def google_sign_in(body: GoogleCredential, request: Request) -> dict:
                 # Already has an account, signing in on a new device or after browsing
                 # anonymously: fold that activity in rather than losing it.
                 conn.execute("update events set user_id = %s where user_id = %s", (uid, anon[0]))
+                # Folders and follows move too, or deleting the anonymous user below would
+                # cascade them away (and kill links already shared). A folder whose name
+                # the account already has is merged into that one; its own link dies.
+                ids = {"uid": uid, "anon": anon[0]}
+                conn.execute(
+                    "insert into folder_papers (folder_id, paper_id) "
+                    "select t.id, fp.paper_id from folder_papers fp "
+                    "join folders a on a.id = fp.folder_id "
+                    "join folders t on t.user_id = %(uid)s and t.name = a.name "
+                    "where a.user_id = %(anon)s on conflict do nothing",
+                    ids,
+                )
+                conn.execute(
+                    "delete from folders a using folders t where a.user_id = %(anon)s "
+                    "and t.user_id = %(uid)s and t.name = a.name",
+                    ids,
+                )
+                conn.execute("update folders set user_id = %(uid)s where user_id = %(anon)s", ids)
+                conn.execute(
+                    "insert into follows (user_id, author, created_at) "
+                    "select %(uid)s, author, created_at from follows where user_id = %(anon)s "
+                    "on conflict do nothing",
+                    ids,
+                )
                 conn.execute("delete from users where id = %s", (anon[0],))
                 conn.execute(
                     "update users set categories = %s where id = %s and categories = '{}'",
@@ -597,9 +681,20 @@ def export_me(user: Me) -> JSONResponse:
             "select author, created_at from follows where user_id = %s order by created_at",
             (user.id,),
         ).fetchall()
+        folders = conn.execute(
+            "select f.name, f.share_id is not null, f.created_at, "
+            "coalesce(array_agg(fp.paper_id) filter (where fp.paper_id is not null), '{}') "
+            "from folders f left join folder_papers fp on fp.folder_id = f.id "
+            "where f.user_id = %s group by f.id order by f.created_at",
+            (user.id,),
+        ).fetchall()
     data = {
         "user": {**user.model_dump(mode="json"), "created_at": created.isoformat()},
         "follows": [{"author": a, "at": at.isoformat()} for a, at in follows],
+        "folders": [
+            {"name": n, "shared": shared, "created_at": at.isoformat(), "papers": ids}
+            for n, shared, at, ids in folders
+        ],
         "events": [
             {"kind": k, "paper_id": pid, "title": t, "ranker": r, "at": at.isoformat()}
             for k, pid, t, r, at in events
@@ -662,7 +757,8 @@ def get_saved(user: Me) -> list[Paper]:
     with get_pool().connection() as conn:
         rows = conn.execute(
             """
-            select p.id, p.title, p.tldr, p.abstract, p.authors, p.categories, p.published_at
+            select p.id, p.title, p.tldr, p.abstract, p.authors, p.categories, p.published_at,
+                   p.hf_upvotes, p.code_url
             from papers p
             join (
                 select paper_id, max(created_at) as saved_at from events
@@ -748,8 +844,8 @@ def _save(user: User, request: Request, paper_ids: list[str]) -> list[SavedPaper
                 409, f"Your library is full ({MAX_SAVED} papers). Remove some first."
             )
         rows = conn.execute(
-            "select id, title, tldr, abstract, authors, categories, published_at "
-            "from papers where id = any(%s)",
+            "select id, title, tldr, abstract, authors, categories, published_at, "
+            "hf_upvotes, code_url from papers where id = any(%s)",
             (paper_ids,),
         ).fetchall()
     papers = {r[0]: Paper(**dict(zip(Paper.model_fields, r, strict=True))) for r in rows}
@@ -837,8 +933,8 @@ def import_papers(
         ids = arxiv.authored_arxiv_ids(orcid=orcid, author=author, limit=IMPORT_SIZE)
         with get_pool().connection() as conn:
             rows = conn.execute(
-                "select id, title, tldr, abstract, authors, categories, published_at "
-                "from papers where id = any(%s)",
+                "select id, title, tldr, abstract, authors, categories, published_at, "
+                "hf_upvotes, code_url from papers where id = any(%s)",
                 (ids,),
             ).fetchall()
         papers = {r[0]: Paper(**dict(zip(Paper.model_fields, r, strict=True))) for r in rows}
@@ -893,6 +989,118 @@ def unfollow(user: Me, author: Annotated[str, Query(max_length=200)]) -> None:
         conn.execute("delete from follows where user_id = %s and author = %s", (user.id, author))
 
 
+# Folders group a reader's saved papers. Every query is scoped to the caller, so another
+# reader's folder id behaves exactly like one that doesn't exist.
+FOLDERS = """
+select f.id, f.name, f.share_id,
+       coalesce(array_agg(fp.paper_id order by fp.added_at)
+                filter (where fp.paper_id is not null), '{}')
+from folders f left join folder_papers fp on fp.folder_id = f.id
+where f.user_id = %s
+group by f.id order by f.created_at
+"""
+
+
+def _folder(row) -> dict:
+    return {"id": row[0], "name": row[1], "shared": row[2], "paper_ids": row[3]}
+
+
+def _own_folder(conn, user: User, folder_id: int) -> None:
+    if not conn.execute(
+        "select 1 from folders where id = %s and user_id = %s", (folder_id, user.id)
+    ).fetchone():
+        raise HTTPException(404, "No such folder")
+
+
+@app.get("/folders", dependencies=[Depends(read_limit)])
+def list_folders(user: Me) -> list[dict]:
+    with get_pool().connection() as conn:
+        return [_folder(r) for r in conn.execute(FOLDERS, (user.id,))]
+
+
+@app.post("/folders", status_code=201, dependencies=[Depends(write_limit)])
+def create_folder(body: FolderName, user: Me) -> dict:
+    with get_pool().connection() as conn:
+        (n,) = conn.execute(
+            "select count(*) from folders where user_id = %s", (user.id,)
+        ).fetchone()
+        if n >= MAX_FOLDERS:
+            raise HTTPException(409, f"You have {MAX_FOLDERS} folders already.")
+        try:
+            (folder_id,) = conn.execute(
+                "insert into folders (user_id, name) values (%s, %s) returning id",
+                (user.id, body.name),
+            ).fetchone()
+        except psycopg.errors.UniqueViolation:
+            raise HTTPException(409, "You already have a folder with that name.") from None
+    return {"id": folder_id, "name": body.name, "shared": None, "paper_ids": []}
+
+
+@app.delete("/folders/{folder_id}", status_code=204, dependencies=[Depends(write_limit)])
+def delete_folder(folder_id: int, user: Me) -> None:
+    """The folder goes; its papers stay saved."""
+    with get_pool().connection() as conn:
+        _own_folder(conn, user, folder_id)
+        conn.execute("delete from folders where id = %s", (folder_id,))
+
+
+@app.put(
+    "/folders/{folder_id}/papers/{paper_id:path}",  # old-style ids have a slash
+    status_code=204,
+    dependencies=[Depends(write_limit)],
+)
+def file_paper(
+    folder_id: int, paper_id: Annotated[str, PathParam(max_length=32)], user: Me
+) -> None:
+    with get_pool().connection() as conn:
+        _own_folder(conn, user, folder_id)
+        if not conn.execute(
+            "select 1 from events where user_id = %s and paper_id = %s and kind = 'save' limit 1",
+            (user.id, paper_id),
+        ).fetchone():
+            raise HTTPException(404, "Save the paper first")
+        conn.execute(
+            "insert into folder_papers (folder_id, paper_id) values (%s, %s) "
+            "on conflict do nothing",
+            (folder_id, paper_id),
+        )
+
+
+@app.delete(
+    "/folders/{folder_id}/papers/{paper_id:path}",  # old-style ids have a slash
+    status_code=204,
+    dependencies=[Depends(write_limit)],
+)
+def unfile_paper(
+    folder_id: int, paper_id: Annotated[str, PathParam(max_length=32)], user: Me
+) -> None:
+    with get_pool().connection() as conn:
+        _own_folder(conn, user, folder_id)
+        conn.execute(
+            "delete from folder_papers where folder_id = %s and paper_id = %s",
+            (folder_id, paper_id),
+        )
+
+
+@app.post("/folders/{folder_id}/share", dependencies=[Depends(write_limit)])
+def share_folder(folder_id: int, user: Me) -> dict:
+    """A link anyone can open. Asking again returns the same link."""
+    with get_pool().connection() as conn:
+        _own_folder(conn, user, folder_id)
+        (token,) = conn.execute(
+            "update folders set share_id = coalesce(share_id, %s) where id = %s returning share_id",
+            (secrets.token_urlsafe(9), folder_id),
+        ).fetchone()
+    return {"share_id": token}
+
+
+@app.delete("/folders/{folder_id}/share", status_code=204, dependencies=[Depends(write_limit)])
+def unshare_folder(folder_id: int, user: Me) -> None:
+    with get_pool().connection() as conn:
+        _own_folder(conn, user, folder_id)
+        conn.execute("update folders set share_id = null where id = %s", (folder_id,))
+
+
 @app.post("/events", status_code=204, dependencies=[Depends(write_limit)])
 def log_event(event: Event, user: Me) -> None:
     # Attribute the action to whichever ranker last showed this paper to this user.
@@ -929,6 +1137,12 @@ def undo_event(
             "delete from events where user_id = %s and paper_id = %s and kind = %s",
             (user.id, paper_id, kind),
         )
+        if kind == "save":  # folders only hold saved papers
+            conn.execute(
+                "delete from folder_papers where paper_id = %s "
+                "and folder_id in (select id from folders where user_id = %s)",
+                (paper_id, user.id),
+            )
 
 
 @app.get("/stats", dependencies=[Depends(read_limit)])

@@ -116,12 +116,15 @@ async function onGoogleCredential(response) {
 
 /* ---------- Paper entries ---------- */
 
-function entry(p, rank, { saved = false } = {}) {
+function entry(p, rank, { saved = false, onRemove = () => {} } = {}) {
   const url = `https://arxiv.org/abs/${p.id}`;
   const node = el("li", { className: "paper", tabIndex: -1 });
+  node.dataset.id = p.id;
 
   const title = el("a", { href: url, target: "_blank", rel: "noopener", textContent: p.title });
   title.addEventListener("click", () => track(p.id, "click"));
+  // A middle-click opens a tab without firing "click".
+  title.addEventListener("auxclick", (e) => { if (e.button === 1) track(p.id, "click"); });
 
   const summary = p.tldr ?? `${p.abstract.slice(0, 260).trimEnd()}…`;
   const actions = el("div", { className: "actions" });
@@ -142,8 +145,14 @@ function entry(p, rank, { saved = false } = {}) {
 
   const links = () => [
     el("a", { className: "link", href: `https://arxiv.org/pdf/${p.id}`, target: "_blank", rel: "noopener", textContent: "PDF" }),
+    el("button", { className: "link", type: "button", textContent: "Share", onclick: () => sharePaper(p) }),
+    p.hf_upvotes ? el("a", { className: "link", href: `https://huggingface.co/papers/${p.id}`, target: "_blank",
+      rel: "noopener", textContent: `▲ ${p.hf_upvotes} on Hugging Face` }) : null,
+    // code_url comes from a third party; the server keeps only https links, and so does this.
+    p.code_url?.startsWith("https://") ? el("a", { className: "link", href: p.code_url, target: "_blank",
+      rel: "noopener noreferrer", textContent: "Code" }) : null,
     el("span", { className: "cats", textContent: p.categories.slice(0, 3).join("  ") }),
-  ];
+  ].filter(Boolean);  // replaceChildren would print "null" for the optional links
   node._idle = () => {
     node.dataset.state = "";
     $(".mark", node).textContent = String(rank);
@@ -175,11 +184,31 @@ function entry(p, rank, { saved = false } = {}) {
       node.remove();
       setSavedCount(me.saved - 1);
       $(".dateline").textContent = savedLine(me.saved);
+      onRemove(p.id);
       say("Removed from saved");
     } }),
     ...links(),
   );
   return node;
+}
+
+// The phone's share sheet (WhatsApp is one tap away), or the clipboard on a laptop.
+async function shareText(text) {
+  if (navigator.share) {
+    try { return await navigator.share({ text }); } catch (e) {
+      // AbortError: the reader closed the sheet. Anything else (iOS refuses a share
+      // started after an await) falls through to the clipboard.
+      if (e.name === "AbortError") return;
+    }
+  }
+  try { await navigator.clipboard.writeText(text); say("Link copied. Paste it anywhere."); }
+  catch { say("Couldn't copy here. Copy the link from the address bar instead."); }
+}
+
+// The arXiv link comes first so chat apps preview the paper, not xoult.
+function sharePaper(p) {
+  return shareText([p.title, p.tldr, `https://arxiv.org/abs/${p.id}`, "",
+    `Found on xoult, today's arXiv ranked for you: ${location.origin}`].filter((l) => l != null).join("\n"));
 }
 
 async function act(node, p, kind) {
@@ -267,37 +296,159 @@ const savedLine = (n) => (n
 
 // Like Today's: switching tabs shouldn't refetch. Saves elsewhere (another device) show
 // within the TTL; saves here clear it through setSavedCount.
-let savedCache = null;  // { key, at, papers }
+let savedCache = null;  // { key, at, papers, folders }
 
 async function renderSaved() {
-  let papers;
-  if (savedCache && savedCache.key === me.id && Date.now() - savedCache.at < TODAY_TTL) {
-    papers = savedCache.papers;
-  } else {
+  if (!savedCache || savedCache.key !== me.id || Date.now() - savedCache.at >= TODAY_TTL) {
     view.replaceChildren(el("p", { className: "status", textContent: "Loading saved papers…" }));
-    try { papers = await api("/saved"); } catch (e) {
+    let papers, folders;
+    try { [papers, folders] = await Promise.all([api("/saved"), api("/folders")]); } catch (e) {
       if (e.status !== 401) view.replaceChildren(failure(renderSaved));
       return;
     }
     setSavedCount(papers.length);
-    savedCache = { key: me.id, at: Date.now(), papers };
+    savedCache = { key: me.id, at: Date.now(), papers, folders };
   }
+  const { papers, folders } = savedCache;
   const nudge = !me.signed_in && config.google_client_id && papers.length >= 3
     ? el("p", { className: "nudge" }, "These live only in this browser. ",
         el("a", { href: "#settings", textContent: "Sign in" }), " to keep them on every device.")
     : null;
-  const list = el("ol", { className: "papers" }, ...papers.map((p, i) => entry(p, i + 1, { saved: true })));
+
+  let selected = null;  // the folder being shown, or null for all saved papers
+  const bar = el("div", { className: "folders-bar", role: "group", ariaLabel: "Folders" });
+  const failed = () => say("That didn't work. Try again.");
+  const savedEntry = (p, i) => {
+    const node = entry(p, i, { saved: true, onRemove: (id) => {
+      for (const f of folders) f.paper_ids = f.paper_ids.filter((x) => x !== id);
+      drawBar();
+    } });
+    $(".actions", node).append(folderPicker(p.id));
+    return node;
+  };
+  const list = el("ol", { className: "papers" }, ...papers.map((p, i) => savedEntry(p, i + 1)));
+
   const filter = papers.length >= 10 ? el("input", {
     type: "search", className: "filter", placeholder: `Filter your ${papers.length} saved papers`,
-    ariaLabel: "Filter your saved papers",
-    oninput: () => {
-      const words = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
-      for (const li of list.children) {
-        const text = li.textContent.toLowerCase();
-        li.hidden = !words.every((w) => text.includes(w));
-      }
-    },
+    ariaLabel: "Filter your saved papers", oninput: () => applyFilters(),
   }) : null;
+  // Text filter and folder together: a paper shows if it's in the folder and matches.
+  function applyFilters() {
+    const words = filter ? filter.value.toLowerCase().split(/\s+/).filter(Boolean) : [];
+    const ids = selected && new Set(selected.paper_ids);
+    for (const li of list.children) {
+      const text = li.textContent.toLowerCase();
+      li.hidden = Boolean(ids && !ids.has(li.dataset.id)) || !words.every((w) => text.includes(w));
+    }
+  }
+
+  // Ticking a folder on a paper. Built when opened, so new folders show up in it.
+  function folderPicker(pid) {
+    const box = el("details", { className: "folders" }, el("summary", { textContent: "Folders" }));
+    box.addEventListener("toggle", () => {
+      if (!box.open) return;
+      const boxes = folders.map((f) => {
+        const input = el("input", { type: "checkbox", checked: f.paper_ids.includes(pid) });
+        input.onchange = async () => {
+          const on = input.checked;
+          try {
+            await api(`/folders/${f.id}/papers/${encodeURIComponent(pid)}`, { method: on ? "PUT" : "DELETE" });
+            f.paper_ids = on ? [...f.paper_ids, pid] : f.paper_ids.filter((x) => x !== pid);
+            drawBar();
+            applyFilters();
+          } catch { input.checked = !on; failed(); }
+        };
+        return el("label", {}, input, ` ${f.name}`);
+      });
+      box.replaceChildren(box.firstChild);
+      append(box, ...(boxes.length ? boxes
+        : [el("p", { className: "status", textContent: "No folders yet. Make one with “+ New folder” above the list." })]));
+    });
+    return box;
+  }
+
+  function newFolderInput() {
+    const input = el("input", { type: "text", maxLength: 60, placeholder: "Folder name, then Enter", ariaLabel: "New folder name" });
+    input.onkeydown = async (e) => {
+      if (e.key === "Escape") return drawBar();
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const name = input.value.trim();
+      if (!name) return;
+      try {
+        const f = await api("/folders", { method: "POST", body: JSON.stringify({ name }) });
+        // Not selected: an empty folder would hide the very papers you'd add to it.
+        folders.push(f);
+        drawBar();
+        say(`Folder “${f.name}” made. Add papers to it from Folders on each paper.`);
+      } catch (err) {
+        say(err.status === 409 ? "You already have a folder with that name, or as many folders as xoult allows." : "That didn't work. Try again.");
+      }
+    };
+    setTimeout(() => input.focus());
+    return input;
+  }
+
+  function folderTools(f) {
+    const row = el("span", { className: "folder-tools" });
+    const draw = () => {
+      row.replaceChildren();
+      append(row,
+        el("button", { className: "link", type: "button", textContent: "Share link", onclick: async () => {
+          try {
+            const { share_id } = await api(`/folders/${f.id}/share`, { method: "POST" });
+            f.shared = share_id;
+            draw();
+            const n = f.paper_ids.length;
+            shareText(`${f.name}: ${n} paper${n === 1 ? "" : "s"}, on xoult\n${location.origin}/f/${share_id}`);
+          } catch { failed(); }
+        } }),
+        // The link itself, so it can be copied by hand wherever sharing is refused.
+        f.shared ? el("input", { readOnly: true, value: `${location.origin}/f/${f.shared}`, ariaLabel: "Shared link",
+          size: 34, onfocus: (e) => e.target.select() }) : null,
+        f.shared ? el("button", { className: "link", type: "button", textContent: "Stop sharing", onclick: async () => {
+          try {
+            await api(`/folders/${f.id}/share`, { method: "DELETE" });
+            f.shared = null;
+            draw();
+            say("Link turned off. Anyone who has it now sees nothing.");
+          } catch { failed(); }
+        } }) : null,
+        el("button", { className: "link", type: "button", textContent: "Delete folder", onclick: async () => {
+          if (!confirm(`Delete the folder “${f.name}”? Its papers stay saved.`)) return;
+          try {
+            await api(`/folders/${f.id}`, { method: "DELETE" });
+            folders.splice(folders.indexOf(f), 1);
+            selected = null;
+            drawBar();
+            applyFilters();
+            say("Folder deleted. Its papers are still saved.");
+          } catch { failed(); }
+        } }),
+      );
+    };
+    draw();
+    return row;
+  }
+
+  function drawBar() {
+    const pick = (f) => el("button", {
+      className: "btn", type: "button", ariaPressed: String(selected === f),
+      textContent: f ? `${f.name} (${f.paper_ids.length})` : `All (${list.children.length})`,
+      onclick: () => {
+        selected = f;
+        drawBar();
+        applyFilters();
+        $('[aria-pressed="true"]', bar).focus();
+      },
+    });
+    const add = el("button", { className: "link", type: "button", textContent: "+ New folder" });
+    add.onclick = () => add.replaceWith(newFolderInput());
+    bar.replaceChildren(pick(null), ...folders.map(pick), add);
+    if (selected) bar.append(folderTools(selected));
+  }
+  if (papers.length) drawBar();
+
   const copyAll = papers.length ? el("p", { className: "tools" }, filter, el("button", {
     className: "link", textContent: `Copy BibTeX for all ${papers.length}`,
     onclick: async () => {
@@ -314,11 +465,12 @@ async function renderSaved() {
     el("p", { className: "dateline", textContent: savedLine(papers.length) }),
     nudge,
     addPaper(new Set(papers.map((p) => p.id)), (paper) => {
-      list.prepend(entry(paper, 0, { saved: true }));
+      list.prepend(savedEntry(paper, 0));
       $(".dateline").textContent = savedLine(me.saved);
     }),
     copyAll,
     authorsPanel(),
+    papers.length ? bar : null,
     list,
   );
 }
@@ -618,7 +770,7 @@ function renderWelcome() {
     el("h1", { textContent: finishing ? "Pick what you follow" : "A short list from today's arXiv" }),
     el("p", { textContent: finishing
       ? "Choose the categories to rank. You can change them any time in Settings."
-      : "About 1,900 machine learning papers are announced each weekday. Save the ones worth reading, mark the rest as not for you, and the list reorders around what you save. You can also add papers you're already reading by pasting their arXiv links. No account needed." }),
+      : "About 1,900 machine learning and HCI papers are announced each weekday. Save the ones worth reading, mark the rest as not for you, and the list reorders around what you save. You can also add papers you're already reading by pasting their arXiv links. No account needed." }),
     form,
     signIn ? el("div", { className: "alt" }, el("p", { className: "status", textContent: "Used xoult before? Sign in to get your saved papers back." }), signIn) : null,
   ));

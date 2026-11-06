@@ -64,3 +64,36 @@ create table if not exists follows (
     primary key (user_id, author)
 );
 alter table follows enable row level security;
+
+-- Named groups of a reader's saved papers, like GitHub Lists. A paper can be in several.
+-- share_id is null while private; a random token makes a read-only page at /f/<token>.
+-- Turning sharing off nulls it, so old links stop working at once.
+create table if not exists folders (
+    id         bigint generated always as identity primary key,
+    user_id    uuid not null references users (id) on delete cascade,
+    name       text not null check (length(name) between 1 and 60),
+    share_id   text unique,
+    created_at timestamptz not null default now(),
+    unique (user_id, name)
+);
+create table if not exists folder_papers (
+    folder_id  bigint not null references folders (id) on delete cascade,
+    paper_id   text not null references papers (id) on delete cascade,
+    added_at   timestamptz not null default now(),
+    primary key (folder_id, paper_id)
+);
+alter table folders enable row level security;
+alter table folder_papers enable row level security;
+
+-- From Hugging Face's daily papers list, refreshed each ingest run (ingest.hf_signals).
+-- Null for papers HF never listed, which is most of them.
+alter table papers add column if not exists hf_upvotes int;
+alter table papers add column if not exists code_url   text;  -- https only
+
+-- Days already posted to Bluesky (bluesky.py), so a re-run never posts twice. Not user data.
+create table if not exists bluesky_posts (
+    day        date primary key,
+    uri        text not null,
+    created_at timestamptz not null default now()
+);
+alter table bluesky_posts enable row level security;

@@ -167,6 +167,7 @@ Each key goes in `.env` locally and later in GitHub and Render secrets.
 | Google client ID | Part 3 | `GOOGLE_CLIENT_ID` | Optional: sign-in is hidden without it |
 | Langfuse | [cloud.langfuse.com](https://cloud.langfuse.com) → project → Settings → API Keys | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
 | Sentry | [sentry.io](https://sentry.io) → Create Project → FastAPI → DSN | `SENTRY_DSN` | Optional |
+| Bluesky | [bsky.app](https://bsky.app): make an account for the site, then Settings → Privacy and security → App passwords. Never the account password | `BLUESKY_HANDLE` (e.g. `xoult.bsky.social`), `BLUESKY_APP_PASSWORD` | Optional: the daily thread is skipped without them |
 | Database URL | Part 4 | `DATABASE_URL` | Yes |
 
 **How the LLM keys are used.** `llm_models` in `src/xoult/config.py` is tried top to
@@ -316,6 +317,7 @@ that nobody saved or dismissed, so the database levels off around 190 MB of the 
    | `GEMINI_API_KEY` | Recommended |
    | `OPENROUTER_API_KEY`, `LLAMA_API_KEY` | Optional fallbacks |
    | `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | Optional |
+   | `BLUESKY_HANDLE`, `BLUESKY_APP_PASSWORD` | Optional: one Gemini-written thread per announcement day, once 90% of its papers have TLDRs (usually the 14:00 UTC run). Preview it with `uv run python -c "from xoult import bluesky; bluesky.post_daily(dry_run=True)"` |
 
    Ingest is the only workflow that uses these. CI needs no secrets: its tests use a
    throwaway database and no LLM.

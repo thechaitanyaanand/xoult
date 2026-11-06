@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     github_token: str | None = None
     github_repo: str = "thechaitanyaanand/xoult"
 
-    arxiv_categories: list[str] = ["cs.CL", "cs.IR", "cs.LG", "cs.AI", "cs.CV", "stat.ML"]
+    arxiv_categories: list[str] = ["cs.CL", "cs.IR", "cs.LG", "cs.AI", "cs.CV", "stat.ML", "cs.HC"]
 
     # Picked by evals/rank_eval.py: best NDCG@10 of the 384-dim models tried, and the
     # fastest. Changing it means re-embedding every paper (ingest --reembed).
@@ -47,6 +47,16 @@ class Settings(BaseSettings):
         "meta_llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
     ]
     llm_rpm: int = 25
+
+    # The daily Bluesky thread (bluesky.py). An app password, never the account password;
+    # unset, nothing is posted. Gemini writes it first, then the usual chain.
+    bluesky_handle: str | None = None
+    bluesky_app_password: str | None = None
+    bluesky_models: list[str] = [
+        "gemini/gemini-3.5-flash",
+        "gemini/gemini-3.5-flash-lite",
+        *llm_models,
+    ]
     tldrs_per_run: int = 300
 
     # Papers nobody saved or dismissed are deleted after this many days. The feed looks
