@@ -81,21 +81,26 @@ def test_folders_hold_saved_papers(browser):
     assert browser.put(f"/folders/{f['id']}/papers/{paper(0)}").status_code == 204  # idempotent
     assert browser.put(f"/folders/{f['id']}/papers/{paper(4)}").status_code == 404  # not saved
     assert browser.get("/folders").json() == [
-        {"id": f["id"], "name": "Thesis", "shared": None, "paper_ids": [paper(0)]}]
+        {"id": f["id"], "name": "Thesis", "shared": None, "paper_ids": [paper(0)]}
+    ]
     browser.delete(f"/events?paper_id={paper(0)}&kind=save")
     assert browser.get("/folders").json()[0]["paper_ids"] == []
     assert "Thesis" in str(browser.get("/me/export").json()["folders"])
     assert browser.delete(f"/folders/{f['id']}").status_code == 204
     assert browser.get("/me").json()["saved"] == 1  # deleting a folder keeps saves
 
+
 def test_folders_are_private_to_their_owner(api, browser):
-    start(browser); save(browser, paper(0))
+    start(browser)
+    save(browser, paper(0))
     f = browser.post("/folders", json={"name": "Mine"}).json()
     with TestClient(api.app) as other:
-        start(other); save(other, paper(0))
+        start(other)
+        save(other, paper(0))
         assert other.put(f"/folders/{f['id']}/papers/{paper(0)}").status_code == 404
         assert other.delete(f"/folders/{f['id']}").status_code == 404
         assert other.get("/folders").json() == []
+
 
 def test_folder_name_rules(api, browser, monkeypatch):
     start(browser)
@@ -139,7 +144,8 @@ def test_folder_name_rules(api, browser, monkeypatch):
 
 ```python
 def test_share_folder_link_lifecycle(api, browser):
-    start(browser); save(browser, paper(0))
+    start(browser)
+    save(browser, paper(0))
     f = browser.post("/folders", json={"name": "Week 12"}).json()
     browser.put(f"/folders/{f['id']}/papers/{paper(0)}")
     token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
@@ -153,16 +159,20 @@ def test_share_folder_link_lifecycle(api, browser):
         assert stranger.get(f"/f/{token}").status_code == 404
     assert f"/f/{token}" not in browser.get("/sitemap.xml").text
 
+
 def test_shared_folder_page_escapes_and_hides_owner(api, browser, monkeypatch):
-    owner = start(browser); save(browser, paper(0))
+    owner = start(browser)
+    save(browser, paper(0))
     f = browser.post("/folders", json={"name": "<script>x</script> & co"}).json()
     token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
     text = browser.get(f"/f/{token}").text
     assert "<script>x</script>" not in text and "&lt;script&gt;" in text
     assert owner not in text
 
+
 def test_shared_folder_page_after_unsave(browser):
-    start(browser); save(browser, paper(0))
+    start(browser)
+    save(browser, paper(0))
     f = browser.post("/folders", json={"name": "Empty soon"}).json()
     browser.put(f"/folders/{f['id']}/papers/{paper(0)}")
     token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
@@ -314,31 +324,39 @@ def test_hf_signals_never_raises(monkeypatch):
 def test_validate_rejects_unknown_ids_and_long_text():
     ok = json.dumps({"root": "Hi", "picks": [{"id": "a", "text": "x"}] * 3})
     assert bluesky.validate(ok, {"a"}) is not None
-    assert bluesky.validate(ok, {"b"}) is None                       # invented paper
+    assert bluesky.validate(ok, {"b"}) is None  # invented paper
     long = json.dumps({"root": "x" * 281, "picks": [{"id": "a", "text": "x"}] * 3})
     assert bluesky.validate(long, {"a"}) is None
     assert bluesky.validate("not json", {"a"}) is None
     assert bluesky.validate("```json\n" + ok + "\n```", {"a"}) is not None  # fenced
 
+
 def test_build_post_counts_graphemes_and_attaches_card():
     assert bluesky.graphemes("café — 👩‍🔬") == 8
-    rec = bluesky.build_post("Résumé of the day", "https://arxiv.org/abs/2611.00001",
-                             "T", "D", None)
+    rec = bluesky.build_post(
+        "Résumé of the day", "https://arxiv.org/abs/2611.00001", "T", "D", None
+    )
     assert rec["$type"] == "app.bsky.feed.post"
     assert rec["embed"]["external"]["uri"] == "https://arxiv.org/abs/2611.00001"
+
 
 def test_write_thread_falls_back_after_two_bad_answers(monkeypatch):
     monkeypatch.setattr(bluesky.llm, "complete", lambda *a, **k: "nonsense")
     t = bluesky.write_thread(CANDS, date(2026, 11, 6), 691)
     assert "691 new arXiv papers" in t["root"] and len(t["picks"]) == 3
 
+
 def test_write_thread_uses_gemini_first(monkeypatch):
     seen = {}
+
     def fake(messages, name, models=None, **k):
-        seen.update(name=name, models=models); return GOOD_JSON
+        seen.update(name=name, models=models)
+        return GOOD_JSON
+
     monkeypatch.setattr(bluesky.llm, "complete", fake)
     bluesky.write_thread(CANDS, date(2026, 11, 6), 691)
     assert seen["name"] == "bsky-v1" and seen["models"][0] == "gemini/gemini-3.5-flash"
+
 
 def test_post_daily_skips_without_credentials(monkeypatch):
     monkeypatch.setattr(bluesky.settings, "bluesky_handle", None)
