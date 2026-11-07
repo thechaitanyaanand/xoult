@@ -4,12 +4,12 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 import httpx
 
-from xoult import llm
+from xoult import bluesky, llm
 from xoult.arxiv import clean as _clean
 from xoult.config import settings
 from xoult.db import get_pool
@@ -87,6 +87,49 @@ def store_new_papers() -> int:
         new = cur.rowcount  # summed over the batch; papers already stored count 0
     log.info("feed had %d papers, %d new", len(papers), new)
     return new
+
+
+# Upvotes and code links from Hugging Face's daily papers list: a "people are talking
+# about this" signal and the repo, for the papers HF features (a few dozen a day, mostly
+# ML). The endpoint isn't in HF's documented API, so any failure just skips the step.
+HF_URL = "https://huggingface.co/api/daily_papers"
+
+
+def parse_hf(items: list[dict]) -> dict[str, tuple[int, str | None]]:
+    """arXiv id -> (upvotes, code link). Links come from a third party: https only."""
+    out = {}
+    for item in items:
+        paper = item.get("paper") or {}
+        if not paper.get("id"):
+            continue
+        links = [paper.get("githubRepo"), paper.get("projectPage")]
+        code = next((u for u in links if isinstance(u, str) and u.startswith("https://")), None)
+        out[paper["id"]] = (int(paper.get("upvotes") or 0), code)
+    return out
+
+
+def hf_signals(days: int = 7) -> int:
+    # Upvotes keep growing for days after a paper is listed, so re-read the last week.
+    try:
+        found: dict[str, tuple[int, str | None]] = {}
+        with httpx.Client(timeout=30) as client:
+            for back in range(days):
+                day = datetime.now(UTC).date() - timedelta(days=back)
+                response = client.get(HF_URL, params={"date": day.isoformat(), "limit": 100})
+                response.raise_for_status()
+                found |= parse_hf(response.json())
+        with get_pool().connection() as conn, conn.cursor() as cur:
+            cur.executemany(
+                "update papers set hf_upvotes = %s, code_url = coalesce(%s, code_url) "
+                "where id = %s",
+                [(votes, code, pid) for pid, (votes, code) in found.items()],
+            )
+            updated = cur.rowcount
+    except Exception as e:
+        log.warning("skipped Hugging Face signals: %s", e)
+        return 0
+    log.info("Hugging Face listed %d papers, %d of them here", len(found), updated)
+    return updated
 
 
 def embed_missing(batch_size: int = 256) -> int:
@@ -201,9 +244,14 @@ def main() -> None:
         with get_pool().connection() as conn:
             conn.execute("update papers set embedding = null")
     store_new_papers()
+    hf_signals()
     embed_missing()
     summarize_missing(args.tldrs)
     prune()
+    try:
+        bluesky.post_daily()
+    except Exception:
+        log.exception("Bluesky post failed")  # never fails the ingest run
 
 
 if __name__ == "__main__":

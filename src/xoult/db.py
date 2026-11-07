@@ -8,6 +8,15 @@ from psycopg_pool import ConnectionPool
 from xoult.config import settings
 
 SCHEMA = Path(__file__).parents[2] / "db" / "schema.sql"
+
+# arXiv announces a batch under one timestamp, hundreds of papers each weekday. Papers
+# readers add by hand carry their own submission times, so "the newest timestamp" alone
+# could be a single hand-added preprint; a batch is a timestamp many papers share.
+BATCH = 5
+LATEST_BATCH = (
+    "(select published_at from papers group by published_at "
+    f"having count(*) > {BATCH} order by published_at desc limit 1)"
+)
 # Fail fast on a wrong address instead of hanging until the CI job's timeout.
 CONNECT_TIMEOUT = 10
 

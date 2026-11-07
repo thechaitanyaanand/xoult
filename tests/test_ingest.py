@@ -1,5 +1,10 @@
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+import httpx
+
+from xoult import ingest
 from xoult.ingest import _clean, parse_feed
 from xoult.llm import clean_tldr
 
@@ -71,3 +76,22 @@ def test_clean_tldr():
     assert clean_tldr("**TLDR:** GameSmith scales *self-play*.") == "GameSmith scales self-play."
     assert clean_tldr("   ") is None
     assert clean_tldr("word " * 80) is None
+
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def test_hf_signals_keeps_only_https_code_links():
+    items = json.loads((FIXTURES / "hf_daily.json").read_text(encoding="utf-8"))
+    got = ingest.parse_hf(items)
+    assert got["2611.04277"] == (54, "https://github.com/DeepExperience/Harness-S")
+    assert got["2611.08449"] == (88, "https://research.nvidia.com/labs/lpr/vflash/")
+    assert got["2611.99999"] == (3, None)
+
+
+def test_hf_signals_never_raises(monkeypatch):
+    def down(*args, **kwargs):
+        raise httpx.ConnectError("no network")
+
+    monkeypatch.setattr(httpx.Client, "get", down)
+    assert ingest.hf_signals() == 0

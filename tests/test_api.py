@@ -44,7 +44,9 @@ def api():
              published, v / np.linalg.norm(v))
         )  # fmt: skip
     with get_pool().connection() as conn:
-        conn.execute("truncate follows, events, users, papers")
+        conn.execute(
+            "truncate bluesky_posts, folder_papers, folders, follows, events, users, papers"
+        )
         with conn.cursor() as cur:
             cur.executemany(
                 "insert into papers (id, title, abstract, authors, categories, published_at,"
@@ -465,3 +467,175 @@ def test_import_own_papers_and_follow_authors(api, browser, monkeypatch):
     assert all(i["followed"] is None for i in browser.get("/feed").json()["items"])
     monkeypatch.setattr(api, "MAX_FOLLOWS", 0)
     assert browser.post("/follows", json={"author": "Me"}).status_code == 409
+
+
+def test_folders_hold_saved_papers(browser):
+    start(browser)
+    save(browser, paper(0), paper(2))
+    f = browser.post("/folders", json={"name": "Thesis"}).json()
+    assert browser.put(f"/folders/{f['id']}/papers/{paper(0)}").status_code == 204
+    assert browser.put(f"/folders/{f['id']}/papers/{paper(0)}").status_code == 204  # idempotent
+    assert browser.put(f"/folders/{f['id']}/papers/{paper(4)}").status_code == 404  # not saved
+    assert browser.get("/folders").json() == [
+        {"id": f["id"], "name": "Thesis", "shared": None, "paper_ids": [paper(0)]}
+    ]
+    browser.delete(f"/events?paper_id={paper(0)}&kind=save")
+    assert browser.get("/folders").json()[0]["paper_ids"] == []
+    assert "Thesis" in str(browser.get("/me/export").json()["folders"])
+    assert browser.delete(f"/folders/{f['id']}").status_code == 204
+    assert browser.get("/folders").json() == []
+    assert browser.get("/me").json()["saved"] == 1  # deleting a folder keeps saves
+
+
+def test_folders_are_private_to_their_owner(api, browser):
+    start(browser)
+    save(browser, paper(0))
+    f = browser.post("/folders", json={"name": "Mine"}).json()
+    with TestClient(api.app) as other:
+        start(other)
+        save(other, paper(0))
+        assert other.put(f"/folders/{f['id']}/papers/{paper(0)}").status_code == 404
+        assert other.delete(f"/folders/{f['id']}").status_code == 404
+        assert other.get("/folders").json() == []
+    assert len(browser.get("/folders").json()) == 1
+
+
+def test_folder_name_rules(api, browser, monkeypatch):
+    start(browser)
+    assert browser.post("/folders", json={"name": "  "}).status_code == 422
+    assert browser.post("/folders", json={"name": "x" * 61}).status_code == 422
+    assert browser.post("/folders", json={"name": "Thesis"}).status_code == 201
+    assert browser.post("/folders", json={"name": "Thesis "}).status_code == 409
+    monkeypatch.setattr(api, "MAX_FOLDERS", 2)
+    assert browser.post("/folders", json={"name": "Two"}).status_code == 201
+    assert browser.post("/folders", json={"name": "Three"}).status_code == 409
+
+
+def test_share_folder_link_lifecycle(api, browser):
+    start(browser)
+    save(browser, paper(0))
+    f = browser.post("/folders", json={"name": "Week 12"}).json()
+    browser.put(f"/folders/{f['id']}/papers/{paper(0)}")
+    token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
+    assert browser.post(f"/folders/{f['id']}/share").json()["share_id"] == token
+    assert browser.get("/folders").json()[0]["shared"] == token
+    with TestClient(api.app) as stranger:  # no session at all
+        page = stranger.get(f"/f/{token}")
+        assert page.status_code == 200 and "Week 12" in page.text and paper(0) in page.text
+        assert '<meta name="robots" content="noindex">' in page.text
+        assert page.headers["cache-control"] == "no-store"
+        assert browser.delete(f"/folders/{f['id']}/share").status_code == 204
+        assert stranger.get(f"/f/{token}").status_code == 404
+    assert f"/f/{token}" not in browser.get("/sitemap.xml").text
+    daily = browser.get("/papers/cs.IR")
+    assert "noindex" not in daily.text and "max-age=3600" in daily.headers["cache-control"]
+
+
+def test_shared_folder_page_escapes_and_hides_owner(browser):
+    owner = start(browser)
+    save(browser, paper(0))
+    f = browser.post("/folders", json={"name": "<script>x</script> & co"}).json()
+    token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
+    text = browser.get(f"/f/{token}").text
+    assert "<script>x</script>" not in text and "&lt;script&gt;" in text
+    assert owner not in text
+
+
+def test_shared_folder_page_after_unsave(browser):
+    start(browser)
+    save(browser, paper(0))
+    f = browser.post("/folders", json={"name": "Empty soon"}).json()
+    browser.put(f"/folders/{f['id']}/papers/{paper(0)}")
+    token = browser.post(f"/folders/{f['id']}/share").json()["share_id"]
+    browser.delete(f"/events?paper_id={paper(0)}&kind=save")
+    page = browser.get(f"/f/{token}")
+    assert page.status_code == 200 and "0 papers" in page.text
+
+
+def test_sign_in_keeps_folders_and_follows(api, browser, monkeypatch):
+    monkeypatch.setattr(
+        api, "verify_google_token",
+        lambda c: {"sub": "g-777", "email": "f@example.com", "email_verified": True},
+    )  # fmt: skip
+    # The account already exists, with a "Thesis" folder.
+    start(browser)
+    save(browser, paper(0))
+    thesis = browser.post("/folders", json={"name": "Thesis"}).json()
+    browser.put(f"/folders/{thesis['id']}/papers/{paper(0)}")
+    browser.post("/auth/google", json={"credential": "x"})
+
+    # Another device browses anonymously, then signs in to that account.
+    with TestClient(api.app) as phone:
+        start(phone)
+        save(phone, paper(2))
+        mine = phone.post("/folders", json={"name": "Thesis"}).json()
+        phone.put(f"/folders/{mine['id']}/papers/{paper(2)}")
+        lab = phone.post("/folders", json={"name": "Lab"}).json()
+        phone.put(f"/folders/{lab['id']}/papers/{paper(2)}")
+        token = phone.post(f"/folders/{lab['id']}/share").json()["share_id"]
+        phone.post("/follows", json={"author": "A. Author"})
+        assert phone.post("/auth/google", json={"credential": "x"}).status_code == 200
+
+        folders = {f["name"]: f for f in phone.get("/folders").json()}
+        assert set(folders) == {"Thesis", "Lab"}
+        assert set(folders["Thesis"]["paper_ids"]) == {paper(0), paper(2)}
+        assert phone.get(f"/f/{token}").status_code == 200
+        assert "A. Author" in phone.get("/authors").json()["following"]
+
+
+def test_feed_and_saved_carry_hf_fields(browser):
+    with get_pool().connection() as conn:
+        conn.execute(
+            "update papers set hf_upvotes = 5, code_url = 'https://x.org' where id = %s",
+            (paper(0),),
+        )
+    start(browser, categories=("cs.IR",))
+    items = {i["id"]: i for i in browser.get("/feed?limit=50").json()["items"]}
+    assert items[paper(0)]["hf_upvotes"] == 5 and items[paper(0)]["code_url"] == "https://x.org"
+    assert items[paper(2)]["hf_upvotes"] is None
+    save(browser, paper(0))
+    (saved,) = browser.get("/saved").json()
+    assert saved["hf_upvotes"] == 5 and saved["code_url"] == "https://x.org"
+    assert "on Hugging Face" in browser.get("/papers/cs.IR").text
+
+
+def test_bluesky_due_day_needs_tldrs_and_no_prior_post(browser):
+    from xoult import bluesky
+
+    day = datetime.now(UTC).replace(microsecond=0) + timedelta(days=2)  # newest day
+    rows = [(f"2699.{i:05d}", f"New {i}", "A.", ["B. Author"], ["cs.HC"], day) for i in range(20)]
+    # A reader hand-added a paper with a later date of its own; it isn't a batch.
+    rows.append(("2699.99999", "Added", "A.", ["C."], ["cs.LG"], day + timedelta(days=1)))
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "insert into papers (id, title, abstract, authors, categories, published_at)"
+                " values (%s, %s, %s, %s, %s, %s)",
+                rows,
+            )
+        conn.execute("update papers set tldr = 'T.' where id like '2699.%%' and id < '2699.00016'")
+        assert bluesky.due_day(conn) is None  # 16 of 20 is 80%
+        conn.execute("update papers set tldr = 'T.' where id like '2699.%%' and id < '2699.00019'")
+        assert bluesky.due_day(conn) == day.date()  # 19 of 20 is 95%
+        cands = bluesky.candidates(conn, day.date())
+        assert 0 < len(cands) <= 25 and len({c["id"] for c in cands}) == len(cands)
+        assert all(c["tldr"] for c in cands) and any(c["category"] == "cs.HC" for c in cands)
+        conn.execute("insert into bluesky_posts (day, uri) values (%s, 'at://x')", (day.date(),))
+        assert bluesky.due_day(conn) is None
+        conn.execute("delete from papers where id like '2699.%%'")
+
+
+def test_old_style_arxiv_ids_go_in_folders(browser):
+    start(browser)
+    with get_pool().connection() as conn:
+        conn.execute(
+            "insert into papers (id, title, abstract, authors, categories, published_at) "
+            "values ('hep-th/9901001', 'Old', 'A.', '{X.}', '{hep-th}', '1999-01-01') "
+            "on conflict do nothing"
+        )
+    save(browser, "hep-th/9901001")
+    f = browser.post("/folders", json={"name": "Classics"}).json()
+    assert browser.put(f"/folders/{f['id']}/papers/hep-th%2F9901001").status_code == 204
+    assert browser.get("/folders").json()[-1]["paper_ids"] == ["hep-th/9901001"]
+    assert browser.delete(f"/folders/{f['id']}/papers/hep-th%2F9901001").status_code == 204
+    assert browser.get("/folders").json()[-1]["paper_ids"] == []

@@ -29,6 +29,8 @@ class Candidate:
     embedding: Vector | None = None
     because: str | None = None  # title of the saved paper this one is closest to
     followed: str | None = None  # the followed author this paper is shown for
+    hf_upvotes: int | None = None
+    code_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -118,14 +120,15 @@ SEEN = "select paper_id from events where user_id = %(user)s and kind in ('save'
 # category filter only after its approximate search and silently return too few.
 BY_SIMILARITY = f"""
 with pool as materialized (
-    select id, title, tldr, abstract, authors, categories, published_at, embedding
+    select id, title, tldr, abstract, authors, categories, published_at,
+           hf_upvotes, code_url, embedding
     from papers
     where embedding is not null
       and categories && %(categories)s
       and published_at > now() - make_interval(days => %(days)s)
       and id not in ({SEEN})
 )
-select id, title, tldr, abstract, authors, categories, published_at,
+select id, title, tldr, abstract, authors, categories, published_at, hf_upvotes, code_url,
        1 - (embedding <=> %(profile)s) as similarity
 from pool
 order by embedding <=> %(profile)s
@@ -134,7 +137,8 @@ limit %(k)s
 
 # Cold start: nothing saved yet, so fall back to the newest papers in picked categories.
 BY_CATEGORY = f"""
-select id, title, tldr, abstract, authors, categories, published_at, 0.0 as similarity
+select id, title, tldr, abstract, authors, categories, published_at,
+       hf_upvotes, code_url, 0.0 as similarity
 from papers
 where categories && %(categories)s
   and published_at > now() - make_interval(days => %(days)s)
@@ -147,7 +151,8 @@ limit %(k)s
 # New papers by authors the reader follows, from any category: they follow the person,
 # not the topic. The newest few lead the feed whatever their similarity score.
 FROM_FOLLOWED = f"""
-select id, title, tldr, abstract, authors, categories, published_at, 0.0 as similarity,
+select id, title, tldr, abstract, authors, categories, published_at,
+       hf_upvotes, code_url, 0.0 as similarity,
        (select a from unnest(authors) a where a = any(%(follows)s) limit 1) as followed
 from papers
 where authors && %(follows)s
