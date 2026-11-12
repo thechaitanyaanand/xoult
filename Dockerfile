@@ -1,5 +1,5 @@
 # Build stage: uv resolves and installs; neither uv nor its download cache ships.
-FROM python:3.12-slim AS build
+FROM python:3.15-slim AS build
 COPY --from=ghcr.io/astral-sh/uv:0.9 /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 WORKDIR /app
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-default-groups
 
 # Runtime stage: same base image, so the virtualenv's interpreter path still matches.
-FROM python:3.12-slim
+FROM python:3.15-slim
 RUN useradd --create-home app
 WORKDIR /app
 COPY --from=build --chown=app /app /app
